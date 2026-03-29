@@ -1,5 +1,6 @@
 # Issue: crosvm-hvf
 
+Created: 2026-03-30T00:35:00+08:00
 Source: [plan/crosvm-hvf#Phase1]
 
 ## ISS-001: cros_async Has No macOS Support — Blocks All Compilation
