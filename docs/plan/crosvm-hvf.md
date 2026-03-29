@@ -1,7 +1,7 @@
 # Plan: crosvm-hvf
 
 Created: 2026-03-30T00:10:00+08:00
-Status: ACTIVE
+Status: PAUSED
 Source: Architecture decision (memory/architecture_decision.md), feasibility analysis (docs/research/crosvm-hvf-feasibility.md)
 
 ## Task Description
