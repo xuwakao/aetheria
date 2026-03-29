@@ -40,9 +40,22 @@ Source: [plan/kernel-config]
   - Key built-in modules confirmed: `drivers/android/built-in.a`, `fs/overlayfs/built-in.a`, `fs/ext4/built-in.a`
 **Cross-ref**: [plan/kernel-config#Phase4]
 
+### [2026-03-29T23:50] Phase 5 - Commit and Update Documentation
+**Action**: Updated `docs/architecture.md` kernel section with accurate config table and verified build sizes. Committed kernel submodule (7 files, 2276 insertions) and pushed to remote. Committed main repo (5 files, 197 insertions).
+**Result**: PASS
+**Cross-ref**: [plan/kernel-config#Phase5]
+
+### [2026-03-29T23:51] META-PHASE D - Plan Completed
+**Action**: All 5 phases complete. Final review: ARM64 defconfig (257 lines, 61/61 configs verified), x86_64 defconfig (64/64 verified), kernel builds (vmlinux 12MB ARM64), all committed and pushed.
+**Result**: PASS — Plan marked COMPLETED.
+**Cross-ref**: [plan/kernel-config]
+
 ## Plan Corrections
 
 ## Findings
+
+### F-001: Kernel Size Well Under Estimate
+Estimated ~20-30MB, actual vmlinux is 12MB. Compressed Image is 9.5MB. Stripping ~381 physical HW drivers from OrbStack base was the primary size reduction.
 
 ### F-001: Kernel Size Well Under Estimate
 Estimated ~20-30MB, actual vmlinux is 12MB. This is because we stripped ~381 physical HW driver configs from OrbStack's base. The compressed Image is 9.5MB, suitable for fast VM boot.

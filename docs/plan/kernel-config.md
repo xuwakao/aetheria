@@ -1,7 +1,7 @@
 # Plan: kernel-config
 
 Created: 2026-03-29T20:30:00+08:00
-Status: ACTIVE
+Status: COMPLETED
 Source: Architecture decision (memory/architecture_decision.md), prior research conversation on OrbStack kernel analysis
 
 ## Task Description
@@ -97,7 +97,7 @@ Strategy: start from the OrbStack public defconfig (`orbstack/linux-macvirt` `ma
 
 **Dependencies**: Phase 3, Phase 4
 
-**Status**: PENDING
+**Status**: COMPLETE
 
 ## Findings
 
