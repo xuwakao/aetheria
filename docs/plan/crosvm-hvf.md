@@ -1,7 +1,7 @@
 # Plan: crosvm-hvf
 
 Created: 2026-03-30T00:10:00+08:00
-Status: PAUSED
+Status: ACTIVE
 Source: Architecture decision (memory/architecture_decision.md), feasibility analysis (docs/research/crosvm-hvf-feasibility.md)
 
 ## Task Description
@@ -96,7 +96,7 @@ All work is on the `aetheria-crosvm` submodule (fork of `github.com/xuwakao/cros
 
 **Dependencies**: Phase 1
 
-**Status**: COMPLETE [REVIEW: FAIL — EventContext is no-op stub, crosvm binary not verified]
+**Status**: COMPLETE [REVIEW: previously FAIL — EventContext no-op fixed to real kqueue; crosvm binary now compiles and runs via plan/crosvm-macos-port]
 
 ### Phase 5: Integration — Boot Linux Kernel
 
@@ -110,7 +110,7 @@ All work is on the `aetheria-crosvm` submodule (fork of `github.com/xuwakao/cros
 
 **Dependencies**: Phase 2, Phase 3, Phase 4
 
-**Status**: PENDING — requires full crosvm binary compilation on macOS (many more crates beyond hypervisor)
+**Status**: PENDING — prerequisites satisfied: crosvm binary compiles on macOS (plan/crosvm-macos-port COMPLETED)
 
 ## Findings
 
