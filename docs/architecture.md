@@ -145,44 +145,33 @@ crosvm 是 Google 开发的 Rust VMM，负责创建和维持唯一的一个 Linu
 
 ### 3.3 第三层：Linux 内核（VM 内，共享）
 
-所有容器实例共享一个定制 Linux 内核。不修改内核源码，只自定义 `.config`。
+所有容器实例共享一个定制 Linux 内核。不修改内核源码，只自定义 `.config`。基于 OrbStack 内核分析结论 — 内核不需要"黑魔法"，关键是配置正确。
 
-**必需的内核配置：**
+**内核概况：**
+- 基线：mainline Linux LTS（当前 6.12.x）
+- 配置：自定义 defconfig，基于 OrbStack 公开 defconfig 改造
+- 构建产物：vmlinux 12MB（ARM64）、Image 9.5MB（压缩）
+- 详细 defconfig 见 `aetheria-kernel/configs/`
 
-```kconfig
-# Virtio 设备（对应 crosvm 虚拟设备）
-CONFIG_VIRTIO_BLK=y
-CONFIG_VIRTIO_NET=y
-CONFIG_VIRTIO_FS=y
-CONFIG_VIRTIO_VSOCKETS=y
-CONFIG_DRM_VIRTIO_GPU=y
+**核心配置分类：**
 
-# 容器隔离
-CONFIG_NAMESPACES=y
-CONFIG_USER_NS=y
-CONFIG_PID_NS=y
-CONFIG_NET_NS=y
-CONFIG_CGROUPS=y
-CONFIG_OVERLAY_FS=y
-
-# Android 支持（为未来 Android 容器预留）
-CONFIG_ANDROID_BINDER_IPC=y
-CONFIG_ANDROID_BINDERFS=y
-
-# 文件系统
-CONFIG_EXT4_FS=y
-CONFIG_FUSE_FS=y
-
-# 网络
-CONFIG_BRIDGE=y
-CONFIG_VETH=y
-CONFIG_NETFILTER=y
-```
+| 分类 | 关键配置 | 说明 |
+|------|---------|------|
+| Virtio 设备 | BLK, NET, FS, VSOCKETS, GPU, CONSOLE, BALLOON, INPUT | crosvm 虚拟硬件对接 |
+| 容器隔离 | USER_NS, CGROUP_*, CPUSETS, OVERLAY_FS, SECCOMP_FILTER | nspawn/LXC 运行环境 |
+| 安全模块 | APPARMOR + SELINUX + YAMA（LSM stacking） | 多发行版同时支持 |
+| Android | BINDER_IPC, BINDERFS, PSI, FUSE | 未来 Android 容器 |
+| 网络 | BRIDGE, VETH, NF_TABLES, iptables, WIREGUARD, VXLAN, IPVS | 容器网络 + Docker + K8s |
+| 内存管理 | KSM, TRANSPARENT_HUGEPAGE, VIRTIO_BALLOON, ZRAM | 动态内存回收 + 多容器优化 |
+| 性能 | IO_URING, BPF_SYSCALL, BPF_JIT, PREEMPT, NO_HZ_IDLE | 现代 I/O + eBPF |
+| 架构翻译 | BINFMT_MISC, COMPAT / IA32_EMULATION | Rosetta / QEMU user-mode |
+| 图形 | DRM, DRM_VIRTIO_GPU | gfxstream GPU 加速 |
 
 **内核策略：**
-- 基于 mainline Linux LTS 分支
-- 初期可使用 Kata Containers 预编译内核快速启动
-- 后期维护自己的 defconfig，不 fork 内核源码
+- 基于 mainline Linux LTS 分支，不 fork 内核源码
+- ARM64 和 x86_64 各有独立 defconfig
+- 去除所有物理硬件驱动（USB、WiFi、蓝牙、声卡、物理 GPU），仅保留 virtio
+- OrbStack 内核性能分析表明：真正的性能优势在 host 侧实现，非内核层面
 
 ### 3.4 第四层：aetheria-agent（VM 内，Go，PID 1）
 
