@@ -52,3 +52,18 @@ Source: [plan/crosvm-hvf]
   - hypervisor: hvf/ module with ffi.rs (HVF C API bindings), mod.rs (Hvf struct + Hypervisor trait), placeholder vm.rs/vcpu.rs
 **Result**: PASS — `cargo build -p hypervisor --features hvf` succeeds on macOS ARM64
 **Cross-ref**: [plan/crosvm-hvf#Phase1]
+
+### [2026-03-30T02:00] Phase 2 - COMPLETE: Vm + VmAArch64 trait implementation
+**Action**: Implemented HvfVm struct with full Vm and VmAArch64 trait. Memory mapping via hv_vm_map/hv_vm_unmap, user-space ioevent dispatch, vCPU creation stub (Phase 3). Based on WHPX pattern.
+**Result**: PASS — compiles clean
+**Cross-ref**: [plan/crosvm-hvf#Phase2]
+
+### [2026-03-30T02:15] Phase 3 - COMPLETE: Vcpu + VcpuAArch64 with run loop
+**Action**: Implemented HvfVcpu with full run loop: hv_vcpu_run → exit reason parsing → VcpuExit mapping. Handles EC_DATAABORT (MMIO), EC_SYSTEMREGISTERTRAP (sysreg), EC_WFX_TRAP (WFI/WFE), EC_AA64_HVC/SMC (hypercall), debug exceptions, vtimer. handle_mmio() parses syndrome (ISV, iswrite, sas, srt) and dispatches to IoParams callback. All VcpuAArch64 methods implemented (register access, PSCI version, snapshots).
+**Result**: PASS — compiles clean
+**Cross-ref**: [plan/crosvm-hvf#Phase3]
+
+### [2026-03-30T02:25] Phase 4 - COMPLETE: macOS platform layer — zero todo!()
+**Action**: Replaced all 33 todo!() stubs in base/src/sys/macos/mod.rs with implementations: set_thread_name (pthread_setname_np), getpid, get/set_cpu_affinity, ioctl family (6 functions), file_punch_hole (F_PUNCHHOLE), file_write_zeroes_at (pwrite), SharedMemory (shm_open), SafeDescriptor::eq, syslog (stderr fallback), EventContext (kqueue skeleton), pipe, open_file_or_duplicate, enable_high_res_timers.
+**Result**: PASS — 0 todo!() remaining, hypervisor compiles clean
+**Cross-ref**: [plan/crosvm-hvf#Phase4]

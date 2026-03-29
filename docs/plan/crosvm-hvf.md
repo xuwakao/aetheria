@@ -56,7 +56,7 @@ All work is on the `aetheria-crosvm` submodule (fork of `github.com/xuwakao/cros
 
 **Dependencies**: Phase 1
 
-**Status**: PENDING
+**Status**: COMPLETE
 
 ### Phase 3: Vcpu Trait Implementation — Run Loop and Exit Handling
 
@@ -79,7 +79,7 @@ All work is on the `aetheria-crosvm` submodule (fork of `github.com/xuwakao/cros
 
 **Dependencies**: Phase 2
 
-**Status**: PENDING
+**Status**: COMPLETE
 
 ### Phase 4: macOS Platform Layer Completion
 
@@ -96,7 +96,7 @@ All work is on the `aetheria-crosvm` submodule (fork of `github.com/xuwakao/cros
 
 **Dependencies**: Phase 1
 
-**Status**: PENDING
+**Status**: COMPLETE
 
 ### Phase 5: Integration — Boot Linux Kernel
 
