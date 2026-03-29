@@ -1,7 +1,8 @@
 # Plan: crosvm-macos-build
 
 Created: 2026-03-30T04:45:00+08:00
-Status: PAUSED
+Status: DEPRECATED
+Superseded-by: [plan/crosvm-macos-port]
 Source: [progress/crosvm-hvf-fixes#Phase3] — 30 crates need macOS modules, [plan/crosvm-hvf#Phase5] — boot test blocked
 
 ## Task Description
