@@ -1,0 +1,9 @@
+[submodule "aetheria-crosvm"]
+	path = aetheria-crosvm
+	url = https://github.com/xuwakao/crosvm.git
+[submodule "aetheria-kernel"]
+	path = aetheria-kernel
+	url = https://github.com/xuwakao/aetheria-kernel.git
+[submodule "aetheria-forge"]
+	path = aetheria-forge
+	url = https://github.com/xuwakao/aetheria-forge.git
