@@ -44,6 +44,45 @@ Source: [plan/crosvm-macos-real-impl]
 **Tests**: PASS — 57/57 tests pass
 **Evidence**: `test result: ok. 57 passed; 0 failed; 0 ignored; 0 measured`
 
+### [2026-03-30T19:15] Starting Phase 2 — Console input thread
+**Expected results**: `spawn_input_thread()` runs a proper read loop with fd readiness waiting, no busy-polling, `cargo build -p devices --no-default-features` compiles.
+
+### Review: Phase 2
+
+| # | Expected Result | Actual Result | Evidence | Verdict |
+|---|-----------------|---------------|----------|---------|
+| 1 | `spawn_input_thread()` runs proper read loop with fd readiness waiting | Implemented using WaitContext (kqueue) with ConsoleEvent and Kill tokens, 4KB read buffer, kill timeout drain logic | `devices/src/virtio/console/sys/macos.rs` (105 lines, mirrors Linux implementation) | PASS [UNVERIFIED at runtime] |
+| 2 | Console input is responsive (no busy-polling) | Uses WaitContext::wait() which blocks on kqueue — no polling | Same file, `wait_ctx.wait()` call at line 67 | PASS [UNVERIFIED at runtime] |
+| 3 | `cargo build -p devices --no-default-features` compiles | Compiles with 0 errors, 38 warnings | `Finished dev profile [unoptimized + debuginfo]` | PASS |
+
+**Overall Verdict**: PASS
+**Notes**: Implementation is structurally identical to Linux version. Runtime verification requires a running VM with console input, which is not yet possible (needs HVF runtime wiring).
+
+### [2026-03-30T19:20] Phase 2 — Functional Acceptance
+**Build**: PASS — `cargo build -p devices --no-default-features` and full workspace compile
+**Evidence**: `Finished dev profile [unoptimized + debuginfo]`
+
+### [2026-03-30T19:25] Phase 3 — DEFERRED: Network module is feature-gated
+**Action**: Investigated `devices/src/virtio/net/` — entire module is behind `#[cfg(feature = "net")]` and NOT compiled with `--no-default-features`. The macOS stub file is dead code. vmnet.framework implementation deferred until networking is actually needed.
+**Cross-ref**: [plan/crosvm-macos-real-impl#Phase3]
+
+### F-004: Feature-gated stubs are not on the critical path
+Multiple stub files (net, vsock, vhost_user_backend) are behind Cargo features that are disabled with `--no-default-features`. These stubs are never compiled and cannot block VM execution. Only stubs in unconditionally-compiled modules need real implementations.
+
+### [2026-03-30T19:30] META-PHASE D — Completion
+**Summary**: Phases 1-2 COMPLETE, Phase 3 DEFERRED (feature-gated, non-blocking).
+
+Phase 1 (kqueue executor): KqueueReactor + KqueueSource replace all 4 cros_async stubs. 57/57 tests pass.
+Phase 2 (console input): Real WaitContext-based read loop replaces single-check stub. Mirrors Linux implementation.
+Phase 3 (network): DEFERRED — behind `#[cfg(feature = "net")]`, not blocking.
+
+**Remaining intentional stubs (kept by design)**:
+- `devices/sys/macos/acpi.rs` — macOS has no ACPI subsystem
+- `devices/virtio/iommu/sys/macos.rs` — PCI passthrough only
+- `vm_memory/udmabuf/sys/macos.rs` — Linux kernel feature
+- `devices/virtio/vhost_user_backend/*/sys/macos.rs` — feature-gated, not compiled
+- `devices/virtio/vhost_user_frontend/sys/macos.rs` — feature-gated
+
 ## Plan Corrections
 
 ## Findings

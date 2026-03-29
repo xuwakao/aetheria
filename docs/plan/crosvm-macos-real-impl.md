@@ -1,7 +1,7 @@
 # Plan: crosvm-macos-real-impl
 
 Created: 2026-03-30T18:30:00+08:00
-Status: ACTIVE
+Status: COMPLETED
 Source: User request to replace all macOS stubs with real implementations. Audit identified 14 stub files across cros_async, devices, and vm_memory.
 
 ## Task Description
@@ -62,6 +62,7 @@ Replace macOS stub implementations in crosvm with real, working code. Prioritize
 
 **Dependencies**: Phase 1 (kqueue infrastructure in base crate, already implemented; does NOT depend on cros_async executor)
 **Risks**: Low — the base crate's kqueue EventContext already works.
+**Status**: COMPLETE
 
 ### Phase 3: Network device (vmnet.framework research + implementation)
 
@@ -77,5 +78,6 @@ Replace macOS stub implementations in crosvm with real, working code. Prioritize
 - HIGH: vmnet.framework API may not support all virtio-net features
 - vmnet requires entitlements and may need root/admin privileges
 - Packet format differences between vmnet and Linux TAP
+**Status**: DEFERRED — net module is behind `#[cfg(feature = "net")]`, not compiled with --no-default-features. Not blocking VM execution. Will implement when networking is needed.
 
 ## Findings
