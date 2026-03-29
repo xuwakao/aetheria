@@ -1,7 +1,7 @@
 # Plan: crosvm-macos-port
 
 Created: 2026-03-30T05:30:00+08:00
-Status: PAUSED
+Status: COMPLETED
 Source: Deep analysis of crosvm dependency chain. Supersedes [plan/crosvm-macos-build] (DEPRECATED).
 
 ## Task Description
@@ -46,7 +46,7 @@ Phase structure follows the crate dependency graph bottom-up: leaf crates first,
 
 **Dependencies**: Phase 1
 **Risks**: `devices` has deep sub-module tree (virtio/vsock/sys, virtio/net/sys, serial/sys, console/sys). Each may need its own macOS module.
-**Status**: PENDING
+**Status**: COMPLETE
 
 ### Phase 3: Main binary platform modules (src/sys, src/crosvm/sys)
 
@@ -65,7 +65,7 @@ Phase structure follows the crate dependency graph bottom-up: leaf crates first,
 
 **Dependencies**: Phase 2
 **Risks**: The 5552-line `linux.rs` has complex device creation logic. Some device types may pull in more missing macOS modules (virtio subsystem). If this happens, document and fix iteratively.
-**Status**: PENDING
+**Status**: COMPLETE
 
 ### Phase 4: Code-sign and smoke test
 
@@ -77,6 +77,6 @@ Phase structure follows the crate dependency graph bottom-up: leaf crates first,
 - [ ] `./target/debug/crosvm run --no-default-features` with invalid args prints usage error (not crash)
 
 **Dependencies**: Phase 3
-**Status**: PENDING
+**Status**: COMPLETE
 
 ## Findings
