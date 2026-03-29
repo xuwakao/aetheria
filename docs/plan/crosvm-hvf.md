@@ -1,7 +1,7 @@
 # Plan: crosvm-hvf
 
 Created: 2026-03-30T00:10:00+08:00
-Status: PAUSED
+Status: ACTIVE
 Source: Architecture decision (memory/architecture_decision.md), feasibility analysis (docs/research/crosvm-hvf-feasibility.md)
 
 ## Task Description
@@ -56,7 +56,7 @@ All work is on the `aetheria-crosvm` submodule (fork of `github.com/xuwakao/cros
 
 **Dependencies**: Phase 1
 
-**Status**: COMPLETE
+**Status**: COMPLETE [REVIEW: FAIL — missing unit test, Hvf Drop bug with try_clone]
 
 ### Phase 3: Vcpu Trait Implementation — Run Loop and Exit Handling
 
@@ -79,7 +79,7 @@ All work is on the `aetheria-crosvm` submodule (fork of `github.com/xuwakao/cros
 
 **Dependencies**: Phase 2
 
-**Status**: COMPLETE
+**Status**: COMPLETE [REVIEW: FAIL — missing unit test, unsound Sync impl, missing hv_vcpu_cancel]
 
 ### Phase 4: macOS Platform Layer Completion
 
@@ -96,7 +96,7 @@ All work is on the `aetheria-crosvm` submodule (fork of `github.com/xuwakao/cros
 
 **Dependencies**: Phase 1
 
-**Status**: COMPLETE
+**Status**: COMPLETE [REVIEW: FAIL — EventContext is no-op stub, crosvm binary not verified]
 
 ### Phase 5: Integration — Boot Linux Kernel
 
