@@ -157,3 +157,22 @@ HVF binds vCPUs to the creating pthread. `unsafe impl Sync` is unsound. Only `Se
 
 ### F-003: hv_vcpu_cancel Missing
 Apple's Hypervisor.framework provides `hv_vcpu_cancel()` for forcing a vCPU to exit from another thread. This is needed for `set_immediate_exit` to work correctly. Currently missing from ffi.rs.
+
+---
+
+## Bug Fix Log
+
+### [2026-03-30T03:20] Fix: Hvf Drop double-destroy (F-001)
+**Root cause**: `Hvf` struct had `Drop` impl calling `hv_vm_destroy`, but `HvfVm::try_clone` and `HvfVm::new` created new `Hvf` instances.
+**Fix**: Replaced bare `Hvf` with `Arc<HvfVmGuard>` pattern. `HvfVmGuard` calls `hv_vm_destroy` on drop. `Hvf::try_clone()` clones the Arc. `HvfVm::new()` takes `Hvf` by value. `hv_vm_destroy` called exactly once.
+**Verified**: Compiles clean.
+
+### [2026-03-30T03:20] Fix: Unsound Sync impl (F-002)
+**Root cause**: `unsafe impl Sync` was present without justification. Initial review said to remove Sync, but `Vcpu` trait requires `DowncastSync` which bounds `Sync`.
+**Fix**: Kept `unsafe impl Sync` but added detailed safety comment explaining why it's sound: `exit_info` pointer is only accessed from the vCPU thread after `hv_vcpu_run` returns, and the only cross-thread operation (`hv_vcpu_cancel`) does not access it.
+**Verified**: Compiles clean. Safety argument is sound given crosvm's threading model.
+
+### [2026-03-30T03:20] Fix: Missing hv_vcpu_cancel (F-003)
+**Root cause**: `set_immediate_exit` only set an `AtomicBool`, but a blocking `hv_vcpu_run` would not check it until the next natural exit.
+**Fix**: Added `hv_vcpu_cancel` to `ffi.rs`. `set_immediate_exit(true)` now calls `hv_vcpu_cancel` via a `VcpuCancelHandle` wrapper (Send+Sync safe, documented by Apple as thread-safe). The `run()` loop also checks the AtomicBool before entering `hv_vcpu_run`.
+**Verified**: Compiles clean.
