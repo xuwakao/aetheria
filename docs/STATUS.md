@@ -56,7 +56,7 @@ Host (macOS/Windows/Linux)
 ### 3.1 Hypervisor — HVF 后端 (1,694 行)
 
 **设计预期**: ~2,500 行 Rust，3-5 个月。
-**实际**: 1,694 行，集中在约 2 天内完成。低于预期行数是因为 dlsym 动态绑定减少了重复代码。
+**实际**: 1,694 行。低于预期行数是因为 dlsym 动态绑定减少了重复代码，且 macOS 15 native GIC API 简化了中断处理路径。
 
 | 文件 | 行数 | 功能 | 完成度 |
 |------|------|------|--------|
@@ -141,9 +141,9 @@ Host (macOS/Windows/Linux)
 
 **结果**: 8250/16550A UART 工作，earlycon + ttyS0 控制台输出正常，交互式 shell 可用。
 
-### 3.7 主运行入口 — run_config (575 行)
+### 3.7 主运行入口 — run_config (611 行)
 
-`src/crosvm/sys/macos.rs` 是 macOS VM 的主入口：
+`src/crosvm/sys/macos/` 是 macOS VM 的主入口（macos.rs 575 行 + cmdline.rs 13 行 + config.rs 23 行）：
 
 | 功能 | 状态 |
 |------|------|
@@ -184,7 +184,7 @@ Host (macOS/Windows/Linux)
 | CONFIG_9P_FS + NET_9P_VIRTIO | 有 | 已就绪 |
 | CONFIG_SERIAL_8250 | 有 | 工作中 |
 | CONFIG_BLK_DEV_INITRD | 有 | 工作中 |
-| CONFIG_EXT4_FS | 隐式 (POSIX_ACL=y) | 需验证 |
+| CONFIG_EXT4_FS | 隐式依赖 (POSIX_ACL=y 拉入 EXT4_FS=y) | 已就绪（.config 确认） |
 | CONFIG_FUSE_FS | 有 | 已就绪 |
 | CONFIG_OVERLAY_FS | 有 | 已就绪 |
 | CONFIG_ANDROID_BINDER_IPC | 有 | 已就绪（未测试） |
@@ -269,6 +269,7 @@ Host (macOS/Windows/Linux)
 12. **镜像构建 (forge)** — 空仓库。
 13. **多 vCPU** — 单 vCPU 架构限制（ISS-004），需要重构 build_vm 流程。
 14. **Windows WHPX** — 完全未开始。
+15. **Linux KVM 验证** — crosvm fork 从未在 Linux/KVM 上测试，需确认我们的修改未破坏 upstream 功能。
 
 ### 设计偏差
 
@@ -288,7 +289,7 @@ Host (macOS/Windows/Linux)
 |------|-------------|------|
 | HVF hypervisor 后端 | 1,694 | Rust |
 | GIC 中断控制器 | 614 | Rust |
-| 平台基础库 (base) | ~800 新增 (2,565 总计含上游) | Rust |
+| 平台基础库 (base) | ~1,260 新增 (2,565 总计，其中 mmap.rs/ioctl_macros.rs 约 1,300 行为上游已有) | Rust |
 | 异步执行器 (cros_async) | ~780 新增 (947 总计) | Rust |
 | PSCI 设备 | 169 | Rust |
 | run_config 主入口 | 575 | Rust |
@@ -297,7 +298,7 @@ Host (macOS/Windows/Linux)
 | 内核 defconfig | 513 | Kconfig |
 | 构建脚本 | ~100 | Shell |
 | 文档 (docs/) | ~1,500 | Markdown |
-| **总计** | **~7,400 (Rust) + ~600 (配置/脚本)** | |
+| **总计** | **~5,900 新增 Rust + ~1,500 上游 macOS 代码 + ~600 (配置/脚本)** | |
 
 ---
 
