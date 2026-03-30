@@ -72,6 +72,28 @@ The base crate's `UnixSeqpacket::pair()` used `SOCK_SEQPACKET` which returns EPR
 ### F-002: hv_vcpu_cancel is macOS 15+ API
 The `hv_vcpu_cancel` function is not available in the macOS 14 SDK. Resolved via runtime dlsym lookup with no-op fallback for older macOS versions.
 
+### [2026-03-30T21:30] Phase 3 — Kernel boots to SYSTEM_RESET, no serial output yet
+**Diagnosis progress**:
+1. Fixed guest memory mapping (was missing → instruction abort at 0x80000000)
+2. Fixed system register trap handling (return HVF values + GIC ICC defaults)
+3. Implemented PSCI emulation (VERSION, FEATURES, CPU_ON/OFF, SYSTEM_RESET)
+4. Kernel now boots: decompressor → MMU setup → PSCI probe → PCI enumeration → SYSTEM_RESET
+5. Total 52 vCPU exits in ~2ms. Zero serial writes at 0x3f8.
+6. PSCI SYSTEM_RESET at PC=0xffff8000800236e0, LR=0xffff8000805ab5a0
+
+**Root cause hypothesis**: Kernel panics before serial driver initialization because earlycon isn't being activated (despite cmdline parameter). Possible reasons:
+- earlycon=uart8250,mmio,0x3f8 may need a baud rate or width parameter
+- The FDT stdout-path may not match the serial device
+- The kernel may crash very early due to missing GIC distributor MMIO emulation (read at 0x3fffffe8 returns 0, which may cause kernel to skip GIC init and crash)
+
+**Next steps**:
+- Try `earlycon=uart8250,mmio,0x3f8,115200n8` with explicit baud rate
+- Or compile kernel with CONFIG_EARLYCON=y and CONFIG_SERIAL_EARLYCON=y
+- Or add GIC distributor MMIO emulation (return correct PIDR2 value at 0x3fffffe8)
+
+### F-003: GIC PIDR2 at 0x3fffffe8 returns 0
+The kernel reads GICD_PIDR2 at 0x3fffffe8 to identify the GIC version. Returning 0 means "no GIC found" which may cause the kernel to skip GIC initialization entirely, leading to no interrupts and immediate crash.
+
 ## Plan Corrections
 
 ## Findings
