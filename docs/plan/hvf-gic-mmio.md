@@ -1,7 +1,7 @@
 # Plan: hvf-gic-mmio
 
 Created: 2026-03-30T22:00:00+08:00
-Status: ACTIVE
+Status: PAUSED
 Source: Boot log shows `GICv3: no distributor detected` and `arch_timer: No interrupt available`. [plan/crosvm-hvf-runtime#Phase3]
 
 ## Task Description
