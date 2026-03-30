@@ -2,6 +2,8 @@
 
 Created: 2026-03-31T18:00:00+08:00
 Status: PAUSED
+
+Note: Phase 1 virtio-blk reads work. Phase 2 Alpine rootfs blocked on write I/O completion interrupt delivery. The GIC SPI assert/deassert timing for level-triggered PCI INTx needs further investigation.
 Source: Codebase audit of virtio device creation flow + vmnet.framework research
 Supersedes: [plan/virtio-stack] (DEPRECATED — incorrect assumptions about p9 portability)
 
