@@ -93,6 +93,23 @@ Phase 1 complete (device detected + activated). Phase 2 blocked on disk I/O: ker
 2. Test if a raw read() on fd 12 blocks or returns immediately
 3. Consider bypassing Tube entirely and using a direct Arc<Mutex<Vm>> callback for ioevent registration
 
+### [2026-03-31T04:30] Investigation Results — ISS-017 + disk I/O
+
+**ISS-017 resolved**: Tube SOCK_STREAM framing — added 4-byte LE length prefix. Root cause was MSG_TRUNC|MSG_PEEK returning 0 on SOCK_STREAM.
+
+**Current state**: virtio-blk I/O works end-to-end:
+1. Guest writes to notification BAR → MMIO trap → write_bar fallback signals queue Event
+2. Worker thread wakes (kqueue reactor detects pipe readable), processes virtqueue
+3. Worker reads disk file, writes DMA result to guest memory, updates used ring
+4. Worker calls trigger_interrupt() → **hangs here — interrupt not delivered**
+
+**Root cause of hang**: No MSI-X interrupt vectors allocated for virtio-blk. The guest kernel doesn't request MSI-X (no AllocateOneMsi received by MSI handler). Without interrupts, the guest kernel waits forever for I/O completion notification.
+
+**Next steps**:
+1. Investigate why guest kernel doesn't use MSI-X for virtio-blk on HVF/GICv3
+2. Check if PCI capabilities for MSI-X are properly exposed in FDT
+3. Consider if `handle_io_events` path should also trigger a vCPU interrupt injection for completion
+
 ## Plan Corrections
 
 ## Findings
