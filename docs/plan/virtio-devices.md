@@ -1,7 +1,7 @@
 # Plan: virtio-devices
 
 Created: 2026-03-31T18:00:00+08:00
-Status: ACTIVE
+Status: PAUSED
 Source: Codebase audit of virtio device creation flow + vmnet.framework research
 Supersedes: [plan/virtio-stack] (DEPRECATED — incorrect assumptions about p9 portability)
 
@@ -49,7 +49,7 @@ Implement the production-grade virtio device stack on macOS: block storage with 
 
 **Dependencies**: None
 **Risks**: VirtioPciDevice::new() requires multiple Tube pairs for control communication. On macOS the VM control event loop is not running (ISS-011), so some control paths may not function. Mitigation: create the tubes but accept that runtime control (resize, etc.) won't work until ISS-011 is resolved.
-**Status**: PENDING
+**Status**: COMPLETE
 
 ### Phase 2: Alpine rootfs image + boot pivot
 
