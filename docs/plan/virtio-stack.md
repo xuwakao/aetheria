@@ -1,7 +1,8 @@
 # Plan: virtio-stack
 
 Created: 2026-03-31T17:00:00+08:00
-Status: PAUSED
+Status: DEPRECATED
+Superseded-by: [plan/virtio-devices]
 Source: Full macOS stub audit + vmnet.framework research
 
 ## Task Description
