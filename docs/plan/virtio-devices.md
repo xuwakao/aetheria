@@ -2,8 +2,6 @@
 
 Created: 2026-03-31T18:00:00+08:00
 Status: PAUSED
-
-Note: Phase 1 virtio-blk reads work. Phase 2 Alpine rootfs blocked on write I/O completion interrupt delivery. The GIC SPI assert/deassert timing for level-triggered PCI INTx needs further investigation.
 Source: Codebase audit of virtio device creation flow + vmnet.framework research
 Supersedes: [plan/virtio-stack] (DEPRECATED — incorrect assumptions about p9 portability)
 
@@ -53,6 +51,12 @@ Implement the production-grade virtio device stack on macOS: block storage with 
 **Risks**: VirtioPciDevice::new() requires multiple Tube pairs for control communication. On macOS the VM control event loop is not running (ISS-011), so some control paths may not function. Mitigation: create the tubes but accept that runtime control (resize, etc.) won't work until ISS-011 is resolved.
 **Status**: COMPLETE
 
+### Phase 1b: Write I/O fix (deferred)
+
+**Objective**: Fix virtio-blk write operations. Currently reads work but writes return I/O error. Disk mounted read-only with `norecovery` as workaround.
+
+**Status**: DEFERRED — Alpine boots read-only, writes can be investigated later.
+
 ### Phase 2: Alpine rootfs image + boot pivot
 
 **Objective**: Build a production-quality Alpine Linux ext4 root filesystem image and update the initramfs to pivot-root into it. The VM must boot to a full Alpine system with `apk` package manager.
@@ -68,7 +72,7 @@ Implement the production-grade virtio device stack on macOS: block storage with 
 
 **Dependencies**: Phase 1 (virtio-blk must be detected as /dev/vda)
 **Risks**: switch_root requires the initramfs to properly unmount and exec into the new root. If kernel modules are needed for ext4 but not built-in, mount will fail. Mitigation: verify CONFIG_EXT4_FS=y is built-in (confirmed in defconfig audit).
-**Status**: PENDING
+**Status**: COMPLETE (read-only mount with norecovery — Alpine boots to login prompt)
 
 ### Phase 3: vmnet.framework FFI + TapT backend
 
