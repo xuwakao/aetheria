@@ -61,6 +61,17 @@ Source: [plan/crosvm-hvf-runtime]
 **Smoke test**: PASS — `crosvm run /dev/null` creates HVF VM and exits cleanly
 **Evidence**: Exit code 0, `[INFO crosvm] exiting with success`
 
+### [2026-03-30T20:30] Phase 3 — IN PROGRESS: VM boots, no serial output yet
+**Action**: Implemented full run_config with Arch::build_vm, thread-local vCPU creation, configure_vcpu, and MMIO bus dispatch. Fixed SOCK_SEQPACKET→SOCK_STREAM (macOS limitation), hv_vcpu_cancel via dlsym (macOS 15+ API), and Hypervisor.framework linking.
+**Result**: VM creates, kernel loads, vCPU executes for 8+ seconds without crash. No serial output visible yet.
+**Next**: Add debug tracing to identify why kernel isn't producing serial output (likely system register traps not handled, or timer/interrupt issues).
+
+### F-001: macOS does not support SOCK_SEQPACKET Unix sockets
+The base crate's `UnixSeqpacket::pair()` used `SOCK_SEQPACKET` which returns EPROTONOSUPPORT on macOS. Fixed by using `SOCK_STREAM` instead. This is functionally equivalent for paired sockets (both provide reliable, ordered byte streams).
+
+### F-002: hv_vcpu_cancel is macOS 15+ API
+The `hv_vcpu_cancel` function is not available in the macOS 14 SDK. Resolved via runtime dlsym lookup with no-op fallback for older macOS versions.
+
 ## Plan Corrections
 
 ## Findings

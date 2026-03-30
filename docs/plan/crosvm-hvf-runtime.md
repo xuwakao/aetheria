@@ -2,7 +2,7 @@
 
 Created: 2026-03-30T18:00:00+08:00
 Updated: 2026-03-30T19:40:00+08:00
-Status: ACTIVE
+Status: PAUSED
 Source: [plan/crosvm-hvf#Phase5], [plan/crosvm-macos-port] (COMPLETED), [plan/crosvm-macos-real-impl] (COMPLETED)
 
 ## Task Description
