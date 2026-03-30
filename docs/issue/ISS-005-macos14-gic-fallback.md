@@ -1,7 +1,7 @@
 # ISS-005: macOS 14 GIC fallback does not deliver interrupts
 
 Created: 2026-03-31
-Status: OPEN
+Status: DEFERRED — documented limitation
 Severity: MEDIUM
 Source: Full codebase review (2026-03-31)
 

@@ -1,7 +1,7 @@
 # ISS-015: Simplified create_guest_memory missing Linux features
 
 Created: 2026-03-31
-Status: OPEN
+Status: DEFERRED — documented limitation
 Severity: LOW
 Source: Full codebase review (2026-03-31)
 

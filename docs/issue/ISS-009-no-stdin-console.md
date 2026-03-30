@@ -1,7 +1,7 @@
 # ISS-009: Serial stdin not connected — no interactive console
 
 Created: 2026-03-31
-Status: OPEN
+Status: OPEN — highest priority remaining issue
 Severity: HIGH
 Source: Full codebase review (2026-03-31)
 

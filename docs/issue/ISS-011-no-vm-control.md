@@ -1,7 +1,7 @@
 # ISS-011: No VM control socket — crosvm stop/suspend/resume inoperable
 
 Created: 2026-03-31
-Status: OPEN
+Status: DEFERRED — architecture limitation, solution documented
 Severity: MEDIUM
 Source: Full codebase review (2026-03-31)
 

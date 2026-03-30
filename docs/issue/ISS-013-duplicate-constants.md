@@ -1,7 +1,7 @@
 # ISS-013: GIC address constants duplicated across three files
 
 Created: 2026-03-31
-Status: OPEN
+Status: RESOLVED
 Severity: LOW
 Source: Full codebase review (2026-03-31)
 

@@ -1,7 +1,7 @@
 # ISS-016: Feature-gated device stubs (net, vsock, vhost) remain as placeholders
 
 Created: 2026-03-31
-Status: OPEN
+Status: DEFERRED — documented limitation
 Severity: LOW
 Source: Full codebase review (2026-03-31)
 

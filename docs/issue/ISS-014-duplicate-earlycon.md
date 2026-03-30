@@ -1,7 +1,7 @@
 # ISS-014: Duplicate earlycon kernel cmdline entry
 
 Created: 2026-03-31
-Status: OPEN
+Status: RESOLVED
 Severity: LOW
 Source: Full codebase review (2026-03-31)
 

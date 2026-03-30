@@ -1,7 +1,7 @@
 # ISS-001: Production-blocking debug logging in vCPU loop and IRQ handler
 
 Created: 2026-03-31
-Status: OPEN
+Status: RESOLVED
 Severity: CRITICAL
 Source: Full codebase review (2026-03-31)
 

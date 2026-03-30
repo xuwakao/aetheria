@@ -1,7 +1,7 @@
 # ISS-002: Hardcoded FDT dump path in run_config
 
 Created: 2026-03-31
-Status: OPEN
+Status: RESOLVED
 Severity: HIGH
 Source: Full codebase review (2026-03-31)
 

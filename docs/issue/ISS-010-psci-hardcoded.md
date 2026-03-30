@@ -1,7 +1,7 @@
 # ISS-010: PSCI emulation hardcoded in vCPU loop instead of proper device
 
 Created: 2026-03-31
-Status: OPEN
+Status: OPEN — TODO comment added, refactor deferred
 Severity: MEDIUM
 Source: Full codebase review (2026-03-31)
 

@@ -1,7 +1,7 @@
 # ISS-007: SOCK_SEQPACKET replaced with SOCK_STREAM without documentation
 
 Created: 2026-03-31
-Status: OPEN
+Status: RESOLVED
 Severity: LOW
 Source: Full codebase review (2026-03-31)
 

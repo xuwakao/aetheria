@@ -1,7 +1,7 @@
 # ISS-003: Hardcoded kernel parameters in setup_vm_components
 
 Created: 2026-03-31
-Status: OPEN
+Status: RESOLVED
 Severity: MEDIUM
 Source: Full codebase review (2026-03-31)
 

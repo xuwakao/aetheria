@@ -1,7 +1,7 @@
 # ISS-004: Single vCPU runs on main thread, blocking crosvm event loop
 
 Created: 2026-03-31
-Status: OPEN
+Status: DEFERRED — architecture limitation, solution documented
 Severity: MEDIUM
 Source: Full codebase review (2026-03-31)
 

@@ -1,7 +1,7 @@
 # ISS-012: hv_gic_config_t object never released — potential memory leak
 
 Created: 2026-03-31
-Status: OPEN
+Status: RESOLVED
 Severity: LOW
 Source: Full codebase review (2026-03-31)
 

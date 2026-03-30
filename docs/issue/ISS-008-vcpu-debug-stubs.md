@@ -1,7 +1,7 @@
 # ISS-008: HvfVcpu debug register stubs and incomplete VcpuAArch64 methods
 
 Created: 2026-03-31
-Status: OPEN
+Status: DEFERRED — implemented when needed
 Severity: LOW
 Source: Full codebase review (2026-03-31)
 
