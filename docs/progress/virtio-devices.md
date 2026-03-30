@@ -105,10 +105,22 @@ Phase 1 complete (device detected + activated). Phase 2 blocked on disk I/O: ker
 
 **Root cause of hang**: No MSI-X interrupt vectors allocated for virtio-blk. The guest kernel doesn't request MSI-X (no AllocateOneMsi received by MSI handler). Without interrupts, the guest kernel waits forever for I/O completion notification.
 
+**Investigation continued** — interrupt pathway is fully functional:
+- `HvfGicChip::has_vgic_its()` returns false → no ITS in FDT → no MSI-X → INTx fallback
+- INTx registered correctly: `pcivirtio-block` at IRQ event 0, GSI 4 → GIC SPI INTID 36
+- FDT `interrupt-map` maps PCI device 1 INTA → GIC SPI 4 ✓
+- Worker processes I/O, triggers INTx, IRQ handler services it, `hv_gic_set_spi(36, true)` fires
+- But guest kernel doesn't resume after interrupt delivery — frozen at 171 log lines
+
+**Hypothesis**: The interrupt IS delivered by HVF native GIC, but either:
+1. Guest ISR not invoked (interrupt masked/priority issue in GIC configuration)
+2. DMA response data at wrong guest physical address
+3. Used ring update not visible to guest (cache coherency/memory ordering issue with HVF)
+
 **Next steps**:
-1. Investigate why guest kernel doesn't use MSI-X for virtio-blk on HVF/GICv3
-2. Check if PCI capabilities for MSI-X are properly exposed in FDT
-3. Consider if `handle_io_events` path should also trigger a vCPU interrupt injection for completion
+1. Test if any GIC interrupt delivery works (serial IRQs do work — they're the same mechanism)
+2. Check if the `interrupt_status` register read by the guest returns the expected value
+3. Add debug logging in `inject_interrupts` to track vCPU interrupt state
 
 ## Plan Corrections
 
