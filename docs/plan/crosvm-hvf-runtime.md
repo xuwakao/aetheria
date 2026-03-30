@@ -1,73 +1,79 @@
 # Plan: crosvm-hvf-runtime
 
 Created: 2026-03-30T18:00:00+08:00
-Status: PENDING
-Source: [plan/crosvm-hvf#Phase5], [plan/crosvm-macos-port] (COMPLETED prerequisite)
+Updated: 2026-03-30T19:40:00+08:00
+Status: ACTIVE
+Source: [plan/crosvm-hvf#Phase5], [plan/crosvm-macos-port] (COMPLETED), [plan/crosvm-macos-real-impl] (COMPLETED)
 
 ## Task Description
 
 Implement the runtime execution path for crosvm on macOS HVF: wire up `run_config` to create an HVF VM, set up devices, and boot a Linux kernel with serial console output.
 
-## Key Blocker: Userspace GIC
+## Key Insight: Minimal GIC
 
-All existing crosvm IRQ chip implementations (KvmKernelIrqChip, HallaKernelIrqChip, GeniezoneKernelIrqChip) delegate GIC emulation to the host kernel. Apple's Hypervisor.framework does NOT provide GIC emulation — the hypervisor only provides vCPU execution and memory mapping.
-
-This means we must implement a **userspace GIC (vGIC)** that:
-- Emulates GICv3 distributor (GICD) and redistributor (GICR) MMIO registers
-- Handles interrupt routing, priority, enable/disable, pending/active states
-- Injects virtual interrupts into vCPUs via `hv_vcpu_set_pending_interrupt`
-- Implements the IrqChip and IrqChipAArch64 traits
-
-Estimated complexity: ~800-1200 lines of Rust.
+Analysis of the IrqChip trait shows the GIC implementation is simpler than initially estimated. HVF provides `hv_vcpu_set_pending_interrupt(vcpu, IRQ, pending)` for interrupt injection — we do NOT need full GICD/GICR register emulation. The kernel handles GIC system registers via traps. We only need:
+1. Track IRQ → eventfd mappings (from `register_edge_irq_event`)
+2. Inject pending IRQs before each vCPU run via `hv_vcpu_set_pending_interrupt`
+3. Implement ~5 methods fully, stub ~15 as no-ops
 
 ## Alternatives
 
 | Approach | Pros | Cons | Verdict |
 |----------|------|------|---------|
-| A: Implement userspace GICv3 in crosvm | Full control, no external deps | ~1000 lines of complex register emulation | **Selected** — only viable option |
-| B: Use Apple's built-in GIC (if any) | Zero implementation | Apple HVF does NOT expose GIC APIs | Rejected — not available |
-| C: Port QEMU's GIC to Rust | Well-tested reference | 3000+ lines C, complex licensing | Rejected — too large, cleaner to write from spec |
+| A: Minimal HvfGicChip (event routing + injection only) | ~200 lines, fast to implement, sufficient for serial boot | No full GICv3 register emulation | **Selected** — sufficient for boot verification |
+| B: Full userspace GICv3 (GICD + GICR register emulation) | Correct for all guest OSes | ~1000+ lines, complex, may not be needed if kernel handles traps | Rejected for now — can upgrade later |
+| C: Port QEMU arm_gicv3 | Proven | 3000+ lines C, licensing issues | Rejected |
 
 ## Phases
 
-### Phase 1: Userspace GICv3 Implementation
+### Phase 1: HvfGicChip — Minimal IRQ chip
 
-**Objective**: Implement a userspace GICv3 that satisfies crosvm's IrqChip/IrqChipAArch64 traits.
+**Objective**: Implement `HvfGicChip` satisfying IrqChip + IrqChipAArch64 traits with event-based interrupt routing.
 
-**Expected Results**:
-- [ ] `devices/src/irqchip/hvf_gic.rs` implements IrqChip + IrqChipAArch64
-- [ ] GICD MMIO register emulation (CTLR, TYPER, ISENABLER, ICENABLER, ISPENDR, ICPENDR, IPRIORITYR, ITARGETSR, ICFGR, IROUTER)
-- [ ] GICR MMIO register emulation (CTLR, WAKER, ISENABLER0, ICENABLER0, etc.)
-- [ ] Interrupt injection via hv_vcpu_set_pending_interrupt
-- [ ] Unit tests for basic interrupt routing
+**Expected Results** (real implementation unless marked as planned stub):
+- [ ] `devices/src/irqchip/hvf_gic.rs` exists with `HvfGicChip` struct
+- [ ] IrqChip trait fully implemented: `add_vcpu`, `register_edge_irq_event`, `inject_interrupts` are real; remaining ~12 methods are documented no-ops
+- [ ] IrqChipAArch64 trait: `get_vgic_version` returns ArmVgicV3, `has_vgic_its` returns false, `finalize` is no-op
+- [ ] `inject_interrupts` calls `hv_vcpu_set_pending_interrupt` for pending IRQs
+- [ ] `cargo build -p devices --no-default-features` compiles
+- [ ] Unit test: register IRQ event, signal it, verify pending state
 
 **Dependencies**: None
-**Status**: PENDING
+**Risks**:
+- `hv_vcpu_set_pending_interrupt` only takes IRQ/FIQ type, not IRQ number — may need to track which IRQ is being serviced
+- Edge vs level triggered semantics need care
+**Status**: COMPLETE
 
-### Phase 2: run_config Implementation
+### Phase 2: run_config — Wire up HVF VM execution
 
-**Objective**: Wire up run_config to create HVF VM, memory, IRQ chip, and call the generic run_vm.
+**Objective**: Implement `run_config` in `src/crosvm/sys/macos.rs` to create Hvf VM, set up memory, IRQ chip, and call the generic `run_vm`.
 
-**Expected Results**:
-- [ ] `src/crosvm/sys/macos.rs` run_config creates Hvf, HvfVm, HvfGicChip
-- [ ] setup_vm_components reused from Linux code (extracted to shared module or copied)
-- [ ] create_guest_memory reused
-- [ ] run_vm called with HvfVcpu/HvfVm types
-- [ ] `crosvm run --kernel <path>` starts without crash
+**Expected Results** (real implementation):
+- [ ] `run_config` creates Hvf hypervisor, HvfVm with guest memory, HvfGicChip
+- [ ] `setup_vm_components` adapted for macOS (portable fields only)
+- [ ] `create_guest_memory` reused (calls Arch::guest_memory_layout)
+- [ ] `run_vm` generic function called with HvfVcpu/HvfVm types
+- [ ] `cargo build --no-default-features` compiles
+- [ ] `crosvm run --kernel /dev/null` starts and exits with "failed to load kernel" (not crash/panic)
 
 **Dependencies**: Phase 1
-**Status**: PENDING
+**Risks**:
+- `run_vm` is 2000+ lines with many Linux-specific paths; may need additional cfg gates
+- `setup_vm_components` references Linux-only VmComponents fields
 
-### Phase 3: Boot Verification
+### Phase 3: Boot verification
 
-**Objective**: Boot the Aetheria ARM64 kernel and get serial console output.
+**Objective**: Boot the Aetheria ARM64 kernel using `crosvm run --kernel` and see serial output.
 
 **Expected Results**:
-- [ ] `crosvm run --kernel vmlinux-arm64` boots
-- [ ] Serial console shows kernel boot messages
-- [ ] Kernel reaches init (panic acceptable without rootfs)
+- [ ] `crosvm run --kernel vmlinux-arm64` starts vCPU execution
+- [ ] Serial console shows at least "Booting Linux" or early kernel messages
+- [ ] Process exits cleanly (kernel panic without rootfs is acceptable)
 
-**Dependencies**: Phase 2
-**Status**: PENDING
+**Dependencies**: Phase 2, a compiled ARM64 Linux kernel
+**Risks**:
+- HIGH: FDT generation may have issues (GIC addresses, serial address, memory layout)
+- Timer interrupts may not work without vtimer configuration
+- MMIO handling in vCPU run loop may miss devices
 
 ## Findings
