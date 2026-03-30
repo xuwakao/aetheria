@@ -1,7 +1,7 @@
 # ISS-010: PSCI emulation hardcoded in vCPU loop instead of proper device
 
 Created: 2026-03-31
-Status: OPEN — TODO comment added, refactor deferred
+Status: RESOLVED
 Severity: MEDIUM
 Source: Full codebase review (2026-03-31)
 
@@ -44,5 +44,14 @@ VcpuExit::Hypercall => {
 3. For SYSTEM_OFF/RESET, send a message via vm_evt_wrtube to signal the control loop
 4. For CPU_ON, return PSCI_NOT_SUPPORTED until multi-vCPU is implemented
 5. Use named constants from `hypervisor::PSCI_*`
+
+## Resolution
+
+Resolved by creating `devices/src/psci.rs` (PsciDevice) implementing BusDevice/BusDeviceSync.
+- Registered on hypercall_bus for PSCI 32-bit and 64-bit FID ranges
+- SYSTEM_OFF/RESET signal via `Arc<AtomicU8>` checked by vcpu_loop
+- CPU_ON honestly returns PSCI_NOT_SUPPORTED (-1) instead of lying with SUCCESS
+- Named constants for all PSCI function IDs and return values
+- vcpu_loop now delegates all hypercalls to the bus (same pattern as Linux/KVM)
 
 ## Findings

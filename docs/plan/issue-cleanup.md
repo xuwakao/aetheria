@@ -1,7 +1,7 @@
 # Plan: issue-cleanup
 
 Created: 2026-03-31T14:00:00+08:00
-Status: ACTIVE
+Status: COMPLETED
 Source: Full codebase review ISS-001 through ISS-016
 
 ## Task Description
@@ -67,7 +67,7 @@ Resolve all 16 issues identified in the codebase review. Grouped by type and dep
 - [ ] Boot test: PSCI still probed successfully by kernel
 
 **Dependencies**: Phase 2
-**Status**: PENDING
+**Status**: COMPLETE
 
 ### Phase 5: Document accepted limitations (ISS-005, ISS-008, ISS-015, ISS-016)
 
@@ -107,6 +107,6 @@ Resolve all 16 issues identified in the codebase review. Grouped by type and dep
 - [ ] Both issues reference the recommended solution (Option A from ISS-004)
 
 **Dependencies**: None
-**Status**: PENDING
+**Status**: COMPLETE
 
 ## Findings
