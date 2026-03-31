@@ -43,6 +43,19 @@ Key finding: CONFIG_NET missing from kernel — must add before any networking c
 ### [2026-03-31T19:55] Starting Phase 2 — VmnetTap implementation
 **Expected**: VmnetTap struct with vmnet FFI, implements TapTCommon + Read + Write + AsRawDescriptor + ReadNotifier. Event bridging via pipe fd.
 
+### [2026-03-31T20:50] Phase 2+3 Progress — Compilation complete
+
+All compilation errors resolved. Key fixes:
+- Added `FileReadWriteVolatile` to macOS TapT trait
+- Ported `handle_rx_token`/`handle_rx_queue` Worker methods to macOS
+- Added `RxDescriptorsExhausted` and `WriteBuffer` to macOS cfg gates
+- Fixed vhost-user-net stub signatures (start_queue args + IntoAsync)
+- cfg-gated vhost-user-net SubCommand on macOS
+- Added macOS net cmdline block
+
+Build: `cargo build --no-default-features --features net --release` ✅
+Runtime: requires `sudo` for vmnet — untested (needs user to run interactively)
+
 ## Plan Corrections
 
 ## Findings
