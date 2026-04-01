@@ -169,11 +169,13 @@ func (d *daemon) handleCLIConn(conn net.Conn) {
 func writeJSONResponse(conn net.Conn, resp Response) {
 	data, err := json.Marshal(resp)
 	if err != nil {
-		// Fallback: send a minimal error string if marshal fails.
-		conn.Write([]byte(`{"error":"internal marshal error"}` + "\n"))
+		conn.Write([]byte("{\"error\":\"internal marshal error\"}\n"))
 		return
 	}
-	conn.Write(append(data, '\n'))
+	if _, err := conn.Write(append(data, '\n')); err != nil {
+		// CLI disconnected mid-response — not actionable, just log.
+		fmt.Fprintf(os.Stderr, "write response: %v\n", err)
+	}
 }
 
 func cmdRun() {
@@ -278,6 +280,8 @@ func cmdRun() {
 
 	// Wait for first agent connection (with timeout)
 	deadline := time.After(60 * time.Second)
+	ticker := time.NewTicker(100 * time.Millisecond)
+	defer ticker.Stop()
 	for {
 		d.mu.Lock()
 		connected := d.agentConn != nil
@@ -290,7 +294,7 @@ func cmdRun() {
 			fmt.Println("\nAgent did not connect within 60 seconds")
 			cmd.Process.Kill()
 			os.Exit(1)
-		case <-time.After(100 * time.Millisecond):
+		case <-ticker.C:
 			// poll
 		}
 	}
@@ -422,7 +426,10 @@ func cmdStop() {
 		fmt.Fprintf(os.Stderr, "marshal: %v\n", err)
 		os.Exit(1)
 	}
-	conn.Write(append(data, '\n'))
+	if _, err := conn.Write(append(data, '\n')); err != nil {
+		fmt.Fprintf(os.Stderr, "send shutdown: %v\n", err)
+		os.Exit(1)
+	}
 
 	// Try to read response but don't fail if VM shuts down
 	conn.SetDeadline(time.Now().Add(5 * time.Second))
