@@ -1,6 +1,6 @@
 # Aetheria 项目状态报告
 
-最后更新: 2026-03-31
+最后更新: 2026-04-01
 
 ## 一、架构回顾
 
@@ -35,8 +35,56 @@ Host (macOS/Windows/Linux)
 | 自研 HVF 移植 | VZ framework 无 3D GPU | 已完成，1,732 行 Rust |
 | 共享内核 + nspawn | OrbStack 验证的模型，边际成本近零 | 内核已构建，容器层未开始 |
 | Go 宿主端 | 跨编译简单、生态成熟 | 仅 placeholder |
-| vsock + gRPC | 宿主↔客机通信 | virtio-vsock 未实现 |
-| gfxstream 图形 | macOS Metal 通路已验证 | 未开始 |
+| vsock + gRPC | 宿主↔客机通信 | **已实现** — userspace vsock |
+| GPU 显示：独立进程架构 | 见下方 GPU 架构设计 | Phase 1 完成（Rutabaga2D） |
+
+### GPU 显示架构设计（更新于 2026-04-01）
+
+**原始设计**: crosvm 内嵌 gfxstream + Metal 渲染
+**修订设计**: crosvm headless + 独立 macOS app 渲染
+
+**修订原因**:
+1. gfxstream C++ 库无 macOS 移植，需要数月工作
+2. macOS Cocoa/NSWindow 必须在进程主线程创建，但 crosvm 主线程被 HVF vCPU 循环占用
+3. 业界通用做法（UTM/QEMU、Chromium、Apple VZ）均使用独立进程/线程处理显示窗口
+
+**修订后架构**:
+```
+crosvm (Rust, headless 后台进程)          AetheriaDisplay.app (Swift, 前台)
+┌──────────────────────────────┐        ┌─────────────────────────────┐
+│ virtio-gpu + Rutabaga2D      │ shared │ NSApplication (主线程)        │
+│ ┌──────────────────────────┐ │ memory │ ┌─────────────────────────┐ │
+│ │ DisplayBackend:          │─┼───────►│ │ MTKView + Metal         │ │
+│ │   flip() → write shmem   │ │ signal │ │ IOSurface 零拷贝纹理     │ │
+│ │   signal frame ready     │─┼───────►│ │ 60fps vsync 渲染        │ │
+│ └──────────────────────────┘ │        │ └─────────────────────────┘ │
+│                              │ input  │ 键盘/鼠标 → virtio-input    │
+│ virtio-input ◄───────────────┼────────┤                             │
+└──────────────────────────────┘        └─────────────────────────────┘
+      ▲ vsock 控制通道                          ▲ macOS 原生窗口
+```
+
+**渲染管线（2D 路径）**:
+1. Guest GPU 驱动写入 virtio-gpu resource（XRGB8888 格式）
+2. Guest 发送 `VIRTIO_GPU_CMD_RESOURCE_FLUSH`
+3. crosvm `rutabaga.transfer_read()` → 拷贝到共享内存帧缓冲
+4. crosvm `display.flip()` → 通知 AetheriaDisplay.app
+5. Swift app 从共享内存/IOSurface 创建 MTLTexture → 渲染到屏幕
+
+**技术选型对比**:
+| 方案 | 项目参考 | 性能 | 复杂度 | 选择 |
+|------|---------|------|--------|------|
+| SPICE 协议 | UTM/QEMU | 好 | 极高 | ❌ 过重 |
+| VNC | Lima/colima | 差 | 低 | ❌ 性能不足 |
+| 共享内存 + Socket 通知 | — | 好 | 中 | ✅ Phase 1 |
+| IOSurface 零拷贝 | Chromium | 极好 | 中高 | ✅ Phase 2 |
+| 进程内 Metal | — | — | — | ❌ 主线程冲突 |
+
+**实施阶段**:
+- Phase 1 ✅: crosvm virtio-gpu + Rutabaga2D + DisplayStub (guest 有 /dev/dri/card0)
+- Phase 2: crosvm 共享内存帧缓冲输出 + Swift MetalKit 渲染 app
+- Phase 3: IOSurface 零拷贝优化
+- Phase 4: MoltenVK Vulkan 支持 → gfxstream 3D 加速
 
 ---
 
@@ -221,19 +269,19 @@ Host (macOS/Windows/Linux)
 | 设备 | 内核 defconfig | crosvm 后端代码 | macOS run_config | 端到端可用 |
 |------|---------------|----------------|-----------------|-----------|
 | **virtio-blk** | CONFIG_VIRTIO_BLK=y | macOS 后端完整，PCI wrapping + MSI handler | 已注册 | **是 (读写)** |
-| **virtio-net** | CONFIG_VIRTIO_NET=y | macOS stub（空文件） | 未注册 | 否 |
-| **virtio-fs** | CONFIG_VIRTIO_FS=y | FUSE server 跨平台实现存在，cfg_if 限 Linux | 未注册 | 否 |
-| **virtio-9p** | CONFIG_9P_FS=y | 完整实现，但 cfg_if 限 Linux，且 p9 crate 有 Linux 特定依赖 | 未注册 | 否 |
-| **virtio-vsock** | CONFIG_VIRTIO_VSOCKETS=y | macOS stub（空 struct） | 未注册 | 否 |
+| **virtio-net** | CONFIG_VIRTIO_NET=y + NETDEVICES=y | vmnet.framework 后端，C helper + VmnetTap | 已注册 | **是 (DHCP/DNS/HTTPS/apk)** |
+| **virtio-9p** | CONFIG_9P_FS=y + NET_9P_VIRTIO=y | p9 crate macOS 移植（stat64/readdir/AT_EMPTY_PATH/F_GETPATH） | 已注册 | **是 (双向读写)** |
+| **virtio-vsock** | CONFIG_VSOCKETS=y + VIRTIO_VSOCKETS=y | userspace 实现，Unix domain socket 后端 | 已注册 | **是 (guest→host 连接)** |
+| **virtio-gpu** | CONFIG_DRM=y + DRM_VIRTIO_GPU=y | Rutabaga2D + DisplayStub | 已注册 | **部分 (guest /dev/dri/card0，无可见输出)** |
+| **virtio-fs** | CONFIG_VIRTIO_FS=y | FUSE server cfg_if 限 Linux | 未注册 | 否（用 9P 替代） |
 | **virtio-console** | N/A | macOS 输入线程实现 110 行 | 未注册 | 否 |
-| **virtio-gpu** | 未配置 | 无 macOS 实现 | 未注册 | 否 |
 | **串口 (8250)** | CONFIG_SERIAL_8250=y | 跨平台实现 | 已注册 | **是** |
 
-**PCI 传输层**: 已工作。aarch64 上所有 virtio 设备通过 PCI 总线注册，FDT 包含 PCI 主桥和中断映射。
+**PCI 传输层**: 已工作。6 个 PCI 设备（bridge + blk + net + vsock + 9p + gpu）。
 
 **中断路由**: 已工作。PCI 设备 → GIC SPI (edge-triggered) → vCPU。INTx 回退路径完整。
 
-**当前可运行状态**: Alpine Linux 3.21 从 virtio-blk ext4 rootfs 启动到 login prompt，~50ms。
+**当前可运行状态**: Alpine Linux 3.21，完整网络（ping/DNS/HTTPS/apk install）、文件共享（9P 双向）、vsock 通信、GPU 软件渲染，~50ms 启动。
 
 ---
 
@@ -269,29 +317,32 @@ Host (macOS/Windows/Linux)
 
 ### 已完成（符合设计）
 
-1. **crosvm HVF 移植** — 设计核心，已验证可行性并实现。1,732 行 vs 预期 2,500 行。
-2. **自定义内核** — mainline 6.12.15，defconfig 包含所有规划的功能（virtio 全系列、binder、namespace/cgroup、安全模块）。
-3. **macOS 平台基础** — kqueue event loop、async reactor、内存映射、终端全部工作。
-4. **串口控制台** — 交互式 shell，50ms 启动到 prompt。
-5. **virtio-blk** — 端到端读写工作，Alpine ext4 rootfs 读写挂载。
-6. **Alpine rootfs** — 完整 Linux 发行版从 virtio-blk 启动到 login prompt。
-7. **rootfs/initramfs 构建脚本** — 自动化构建流程。
+1. **crosvm HVF 移植** — 设计核心，1,732 行 Rust。
+2. **多 vCPU** — PSCI CPU_ON + condvar 信号，1-8 核可配。
+3. **自定义内核** — mainline 6.12.15，defconfig 全功能（NET/DRM/VSOCK/9P/binder/cgroup/security）。
+4. **macOS 平台基础** — pipe-backed Event/Timer、kqueue reactor、SOCK_STREAM Tube、CMSG_ALIGN。
+5. **串口控制台** — 8250 UART，交互式 shell，50ms 启动。
+6. **virtio-blk** — 读写工作，Alpine ext4 rootfs 启动。
+7. **virtio-net** — vmnet.framework NAT 后端，DHCP/DNS/HTTPS/apk install 全通，3 轮 review（54 个问题修复）。
+8. **virtio-vsock** — userspace 实现，Unix domain socket 后端，guest↔host 通信验证。
+9. **virtio-9p** — p9 crate macOS 移植（stat64/readdir/F_GETPATH/AT_EMPTY_PATH），双向文件读写验证。
+10. **virtio-gpu Phase 1** — Rutabaga2D + DisplayStub，guest DRM 驱动 probe 成功（/dev/dri/card0）。
+11. **rootfs/initramfs 构建脚本** — Alpine 3.21 + 自动化构建。
 
-### 部分完成（需要补全）
+### 部分完成
 
-8. **virtio 设备栈** — blk 已完成；net/fs/vsock 待实现。PCI 传输层和中断路由已验证。
+12. **virtio-gpu 显示** — crosvm 侧 headless 完成，需要 AetheriaDisplay.app（Swift/Metal）做可见输出。
+13. **GPU 架构已确定** — 独立进程模型（共享内存 + IOSurface），参见 GPU 架构设计章节。
 
 ### 未开始（设计中有但零代码）
 
-9. **virtio-net 网络** — 需要 vmnet.framework 后端（技术调研和 TapT trait 分析已完成）。
-10. **virtio-vsock** — 需要 userspace 实现。
-11. **Go 宿主端** — CLI、daemon、agent 全部为空 placeholder。
-12. **容器层 (nspawn/LXC)** — 完全未开始，依赖 vsock + agent。
-13. **gfxstream 图形** — 完全未开始，依赖 virtio-gpu。
-14. **镜像构建自动化 (forge)** — 空仓库。
-15. **多 vCPU** — 单 vCPU 架构限制（ISS-004），需要重构 build_vm 流程。
-16. **Windows WHPX** — 完全未开始。
-17. **Linux KVM 验证** — crosvm fork 从未在 Linux/KVM 上测试，需确认我们的修改未破坏 upstream 功能。
+14. **AetheriaDisplay.app** — Swift Metal 渲染窗口，从共享内存/IOSurface 读取帧缓冲。
+15. **Go 宿主端** — CLI、daemon、agent 全部为空 placeholder。
+16. **容器层 (nspawn/LXC)** — 完全未开始，依赖 vsock + agent。
+17. **MoltenVK + gfxstream 3D** — Vulkan-on-Metal 层 + gfxstream API 转发。
+18. **镜像构建自动化 (forge)** — 空仓库。
+19. **Windows WHPX** — 完全未开始。
+20. **Linux KVM 验证** — 需确认修改未破坏 upstream。
 
 ### 设计偏差
 
@@ -306,6 +357,9 @@ Host (macOS/Windows/Linux)
 | ARM64 XZR 寄存器 | MMIO 写 srt=31 应返回 0，非 X31 值 | 修正 vcpu.rs handle_mmio |
 | Timer try_clone fd 丢失 | dup'd pipe fd 不在 TIMER_MAP 中 | inode 反查修正 |
 | 宿主端暂用 crosvm CLI 直接启动 | Go daemon 未实现 | 短期可接受，长期需要 daemon |
+| GPU 从 crosvm 内嵌改为独立进程 | macOS 主线程被 HVF 占用，Cocoa 窗口必须在主线程 | 架构更清晰，符合 UTM/Chromium/Apple VZ 模式 |
+| virtio-fs 用 9P 替代 | virtio-fs FUSE crate 仅 Linux（getdents64/namespace/minijail） | 9P 功能等价，p9 crate 已移植 macOS |
+| gfxstream 推迟到 Phase 4 | C++ 库无 macOS 移植，需先建立 MoltenVK Vulkan 层 | 先用 Rutabaga2D 软件渲染 |
 
 ---
 
