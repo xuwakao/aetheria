@@ -72,12 +72,16 @@ func main() {
 
 	log.Println("aetheria-agent starting")
 
-	conn := connectToHost()
-	defer conn.Close()
-
-	log.Println("connected to host via vsock")
-
-	handleConnection(conn)
+	// Reconnection loop: if host disconnects (e.g., daemon restart),
+	// agent reconnects automatically.
+	for {
+		conn := connectToHost()
+		log.Println("connected to host via vsock")
+		handleConnection(conn)
+		conn.Close()
+		log.Println("host disconnected, reconnecting in 2s...")
+		time.Sleep(2 * time.Second)
+	}
 }
 
 // connectToHost dials the host via AF_VSOCK with retries.
@@ -120,14 +124,18 @@ func (c *vsockConn) Close() error {
 
 // dialVsock creates an AF_VSOCK connection to the given CID and port.
 func dialVsock(cid, port uint32) (*vsockConn, error) {
-	fd, err := syscall.Socket(40 /* AF_VSOCK */, syscall.SOCK_STREAM, 0)
+	// AF_VSOCK = 40 on Linux (defined in linux/socket.h).
+	// Go's syscall package doesn't export this constant.
+	const afVsock = 40
+
+	fd, err := syscall.Socket(afVsock, syscall.SOCK_STREAM, 0)
 	if err != nil {
 		return nil, fmt.Errorf("socket: %w", err)
 	}
 
 	// sockaddr_vm layout on Linux: family(2) + reserved(2) + port(4) + cid(4) + zero(4) = 16 bytes
 	sa := [16]byte{}
-	sa[0] = 40 // AF_VSOCK
+	sa[0] = afVsock
 	sa[1] = 0
 	// port (little-endian u32 at offset 4)
 	sa[4] = byte(port)
@@ -248,7 +256,11 @@ func handleExec(req Request) Response {
 		cmd = exec.Command(params.Cmd, params.Args...)
 	}
 
-	var stdout, stderr strings.Builder
+	// Cap output to prevent OOM on large command output.
+	const maxOutput = 10 * 1024 * 1024 // 10MB
+	var stdout, stderr limitedWriter
+	stdout.limit = maxOutput
+	stderr.limit = maxOutput
 	cmd.Stdout = &stdout
 	cmd.Stderr = &stderr
 
@@ -270,6 +282,30 @@ func handleExec(req Request) Response {
 		},
 		ID: req.ID,
 	}
+}
+
+// limitedWriter caps the amount of data that can be written.
+// Prevents OOM from commands with excessive output.
+type limitedWriter struct {
+	buf   []byte
+	limit int
+}
+
+func (w *limitedWriter) Write(p []byte) (int, error) {
+	remaining := w.limit - len(w.buf)
+	if remaining <= 0 {
+		return len(p), nil // discard silently after limit
+	}
+	if len(p) > remaining {
+		w.buf = append(w.buf, p[:remaining]...)
+		return len(p), nil
+	}
+	w.buf = append(w.buf, p...)
+	return len(p), nil
+}
+
+func (w *limitedWriter) String() string {
+	return string(w.buf)
 }
 
 func sendResponse(conn *vsockConn, resp Response) {

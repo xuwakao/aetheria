@@ -293,16 +293,26 @@ func sendToDaemon(req Request) (*Response, error) {
 	defer conn.Close()
 	conn.SetDeadline(time.Now().Add(30 * time.Second))
 
-	data, _ := json.Marshal(req)
-	conn.Write(append(data, '\n'))
+	data, err := json.Marshal(req)
+	if err != nil {
+		return nil, fmt.Errorf("marshal request: %v", err)
+	}
+	if _, err := conn.Write(append(data, '\n')); err != nil {
+		return nil, fmt.Errorf("send to daemon: %v", err)
+	}
 
 	scanner := bufio.NewScanner(conn)
 	if !scanner.Scan() {
+		if err := scanner.Err(); err != nil {
+			return nil, fmt.Errorf("daemon read: %v", err)
+		}
 		return nil, fmt.Errorf("no response from daemon")
 	}
 
 	var resp Response
-	json.Unmarshal(scanner.Bytes(), &resp)
+	if err := json.Unmarshal(scanner.Bytes(), &resp); err != nil {
+		return nil, fmt.Errorf("parse daemon response: %v", err)
+	}
 	return &resp, nil
 }
 
@@ -330,7 +340,10 @@ func cmdInfo() {
 		os.Exit(1)
 	}
 	var info map[string]interface{}
-	json.Unmarshal(resp.Result, &info)
+	if err := json.Unmarshal(resp.Result, &info); err != nil {
+		fmt.Fprintf(os.Stderr, "parse info: %v\n", err)
+		os.Exit(1)
+	}
 	for k, v := range info {
 		fmt.Printf("%-12s %v\n", k+":", v)
 	}
@@ -351,7 +364,10 @@ func cmdExec(command string) {
 	}
 
 	var result ExecResult
-	json.Unmarshal(resp.Result, &result)
+	if err := json.Unmarshal(resp.Result, &result); err != nil {
+		fmt.Fprintf(os.Stderr, "parse exec result: %v\n", err)
+		os.Exit(1)
+	}
 
 	if result.Stdout != "" {
 		fmt.Print(result.Stdout)
