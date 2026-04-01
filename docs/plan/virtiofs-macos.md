@@ -1,6 +1,6 @@
 # Plan: virtiofs on macOS (full implementation)
 
-Status: ACTIVE
+Status: COMPLETED
 Created: 2026-04-01
 Source: Architecture — production-grade filesystem sharing
 

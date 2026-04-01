@@ -75,3 +75,35 @@ and all other container runtimes for shared directories.
 FSEventStreamCreate latency parameter minimum is 0.1 seconds. Combined with
 kFSEventStreamCreateFlagNoDefer, events are delivered at leading edge (near-immediate
 for sparse changes). File-level granularity requires kFSEventStreamCreateFlagFileEvents.
+
+### F-004: FSEventStreamContext is copied by value during Create
+Apple docs: "A copy is made of the info pointer, but not the context structure itself."
+This means FSEventStreamCreate reads the `info` field from the passed-in context struct
+during the call and stores it internally. The context struct itself (FSEventStreamContext)
+can live on the stack — it only needs to survive through the FSEventStreamCreate call.
+The pointed-to CallbackInfo must live as long as the stream.
+
+### [2026-04-02T01:00] Phase 6: Performance tuning
+Applied production virtiofs configuration:
+- writeback=true: kernel coalesces writes before sending to FUSE
+- negative_timeout=5s: cache ENOENT results
+- security_ctx=false: /proc/thread-self/attr/fscreate not available on macOS
+- rewrite_security_xattrs=false: no unprivileged namespace on macOS
+
+### [2026-04-02T01:00] Review fixes
+- Fixed pipe write atomicity: combine path+newline into single write ≤ PIPE_BUF
+- Added root_dir guard: skip FSEvents monitor if root_dir="/" (never set)
+- Added safety documentation for FSEventStreamContext stack lifetime
+
+### [2026-04-02T01:00] Plan COMPLETED
+All 6 phases implemented:
+1. fuse crate macOS compilation ✓
+2. passthrough.rs macOS port ✓ (15 Linux APIs replaced)
+3. Device registration + cache=auto ✓
+4. DAX shared memory (hv_vm_map + fs_mapping_handler_thread) ✓
+5. FSEvents adaptive cache invalidation ✓ (revised from FUSE_NOTIFY)
+6. Performance tuning (writeback, timeouts) ✓
+
+Build status: `cargo check -p fuse -p hypervisor -p vm_control -p devices` — 0 errors
+Runtime verification: virtiofs mount, read/write/mkdir/dd all functional [VERIFIED]
+DAX path (FUSE_SETUPMAPPING): infrastructure complete, runtime use depends on kernel [UNVERIFIED]
