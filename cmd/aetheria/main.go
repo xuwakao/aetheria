@@ -109,10 +109,17 @@ func (d *daemon) sendToAgent(req Request) (*Response, error) {
 	d.mu.Lock()
 	defer d.mu.Unlock()
 
+	if d.agentConn == nil {
+		return nil, fmt.Errorf("agent not connected")
+	}
+
 	d.idCounter++
 	req.ID = d.idCounter
 
-	data, _ := json.Marshal(req)
+	data, err := json.Marshal(req)
+	if err != nil {
+		return nil, fmt.Errorf("marshal request: %v", err)
+	}
 	data = append(data, '\n')
 	if _, err := d.agentConn.Write(data); err != nil {
 		return nil, fmt.Errorf("agent write: %v", err)
@@ -144,20 +151,28 @@ func (d *daemon) handleCLIConn(conn net.Conn) {
 
 	var req Request
 	if err := json.Unmarshal(scanner.Bytes(), &req); err != nil {
-		resp, _ := json.Marshal(Response{Error: "invalid request"})
-		conn.Write(append(resp, '\n'))
+		writeJSONResponse(conn, Response{Error: "invalid request"})
 		return
 	}
 
 	// Forward to agent
 	resp, err := d.sendToAgent(req)
 	if err != nil {
-		errResp, _ := json.Marshal(Response{Error: err.Error(), ID: req.ID})
-		conn.Write(append(errResp, '\n'))
+		writeJSONResponse(conn, Response{Error: err.Error(), ID: req.ID})
 		return
 	}
 
-	data, _ := json.Marshal(resp)
+	writeJSONResponse(conn, *resp)
+}
+
+// writeJSONResponse marshals and sends a response to a connection.
+func writeJSONResponse(conn net.Conn, resp Response) {
+	data, err := json.Marshal(resp)
+	if err != nil {
+		// Fallback: send a minimal error string if marshal fails.
+		conn.Write([]byte(`{"error":"internal marshal error"}` + "\n"))
+		return
+	}
 	conn.Write(append(data, '\n'))
 }
 
@@ -230,42 +245,57 @@ func cmdRun() {
 	}()
 
 	// 4. Wait for agent to connect
-	fmt.Print("Waiting for agent...")
-	agentCh := make(chan net.Conn, 1)
+	d := &daemon{}
+
+	// Accept agent connections continuously (handles reconnection).
 	go func() {
-		conn, err := agentListener.Accept()
-		if err == nil {
-			agentCh <- conn
+		for {
+			fmt.Print("Waiting for agent...")
+			conn, err := agentListener.Accept()
+			if err != nil {
+				return // listener closed (daemon shutting down)
+			}
+			fmt.Println(" connected!")
+
+			d.mu.Lock()
+			if d.agentConn != nil {
+				d.agentConn.Close() // close stale connection
+			}
+			d.agentConn = conn
+			d.agentReader = bufio.NewReaderSize(conn, 1024*1024)
+			d.mu.Unlock()
+
+			// Verify with ping
+			resp, err := d.sendToAgent(Request{Method: "ping"})
+			if err != nil {
+				fmt.Fprintf(os.Stderr, "agent ping failed: %v\n", err)
+				continue
+			}
+			fmt.Printf("Agent ready: %s\n", string(resp.Result))
+			fmt.Println("VM running. Use 'aetheria exec <cmd>' in another terminal.")
 		}
 	}()
 
-	var agentConn net.Conn
-	select {
-	case agentConn = <-agentCh:
-		fmt.Println(" connected!")
-	case <-time.After(60 * time.Second):
-		fmt.Println(" timeout!")
-		cmd.Process.Kill()
-		os.Exit(1)
+	// Wait for first agent connection (with timeout)
+	deadline := time.After(60 * time.Second)
+	for {
+		d.mu.Lock()
+		connected := d.agentConn != nil
+		d.mu.Unlock()
+		if connected {
+			break
+		}
+		select {
+		case <-deadline:
+			fmt.Println("\nAgent did not connect within 60 seconds")
+			cmd.Process.Kill()
+			os.Exit(1)
+		case <-time.After(100 * time.Millisecond):
+			// poll
+		}
 	}
-	defer agentConn.Close()
 
-	d := &daemon{
-		agentConn:   agentConn,
-		agentReader: bufio.NewReaderSize(agentConn, 1024*1024),
-	}
-
-	// Verify with ping
-	resp, err := d.sendToAgent(Request{Method: "ping"})
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "agent ping failed: %v\n", err)
-		cmd.Process.Kill()
-		os.Exit(1)
-	}
-	fmt.Printf("Agent ready: %s\n", string(resp.Result))
-	fmt.Println("VM running. Use 'aetheria exec <cmd>' in another terminal.")
-
-	// 5. Accept CLI connections and relay to agent
+	// Accept CLI connections and relay to agent
 	go func() {
 		for {
 			conn, err := cliListener.Accept()
@@ -387,7 +417,11 @@ func cmdStop() {
 	}
 	defer conn.Close()
 
-	data, _ := json.Marshal(Request{Method: "exec", Params: map[string]string{"cmd": "poweroff"}})
+	data, err := json.Marshal(Request{Method: "exec", Params: map[string]string{"cmd": "poweroff"}})
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "marshal: %v\n", err)
+		os.Exit(1)
+	}
 	conn.Write(append(data, '\n'))
 
 	// Try to read response but don't fail if VM shuts down

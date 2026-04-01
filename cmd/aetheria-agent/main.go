@@ -1,3 +1,5 @@
+//go:build linux
+
 // aetheria-agent — runs inside the guest VM.
 //
 // Connects to the host via vsock (CID=2, port=1024) and processes commands
@@ -287,17 +289,20 @@ func handleExec(req Request) Response {
 // limitedWriter caps the amount of data that can be written.
 // Prevents OOM from commands with excessive output.
 type limitedWriter struct {
-	buf   []byte
-	limit int
+	buf       []byte
+	limit     int
+	truncated bool
 }
 
 func (w *limitedWriter) Write(p []byte) (int, error) {
 	remaining := w.limit - len(w.buf)
 	if remaining <= 0 {
-		return len(p), nil // discard silently after limit
+		w.truncated = true
+		return len(p), nil // accept but discard
 	}
 	if len(p) > remaining {
 		w.buf = append(w.buf, p[:remaining]...)
+		w.truncated = true
 		return len(p), nil
 	}
 	w.buf = append(w.buf, p...)
@@ -305,7 +310,11 @@ func (w *limitedWriter) Write(p []byte) (int, error) {
 }
 
 func (w *limitedWriter) String() string {
-	return string(w.buf)
+	s := string(w.buf)
+	if w.truncated {
+		s += "\n... [output truncated at 10MB]"
+	}
+	return s
 }
 
 func sendResponse(conn *vsockConn, resp Response) {
