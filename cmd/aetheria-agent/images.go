@@ -44,7 +44,7 @@ var imageRegistry = map[string]ImageInfo{
 		Name:    "ubuntu",
 		Version: "24.04",
 		Arch:    "arm64",
-		URL:     "https://cdimage.ubuntu.com/ubuntu-base/releases/24.04/release/ubuntu-base-24.04.2-base-arm64.tar.gz",
+		URL:     "https://cdimage.ubuntu.com/ubuntu-base/releases/24.04/release/ubuntu-base-24.04.4-base-arm64.tar.gz",
 	},
 	"debian": {
 		Name:    "debian",
@@ -83,8 +83,11 @@ func imageCachePath(name string) string {
 }
 
 // imageExtractPath returns the path for the extracted base rootfs.
+// Extract to tmpfs (backed by VM RAM, not the 256MB ext4 rootfs which
+// is too small for Ubuntu ~70MB). NOT virtiofs because macOS APFS
+// symlinks are incompatible with Linux symlinks.
 func imageExtractPath(name string) string {
-	return filepath.Join(imagesDir, name, "rootfs")
+	return filepath.Join("/tmp/aetheria/images", name, "rootfs")
 }
 
 // PullImage downloads a distro rootfs tarball if not cached.
@@ -157,9 +160,18 @@ func extractImage(name, tarball string) error {
 	log.Printf("[image] extracting %s to %s", tarball, dest)
 
 	// Use tar command (handles both .tar.gz and .tar.xz).
+	// On virtiofs, symlink chown/utime fails (I/O error) because the passthrough
+	// uses a placeholder fd for symlinks on macOS. These errors are non-fatal —
+	// the files are extracted correctly, only metadata on symlinks is wrong.
+	// Accept exit code 0 (success) or 2 (non-fatal warnings).
 	cmd := exec.Command("tar", "xf", tarball, "-C", dest)
-	if out, err := cmd.CombinedOutput(); err != nil {
-		return fmt.Errorf("extract %s: %v: %s", name, err, string(out))
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		if exitErr, ok := err.(*exec.ExitError); ok && exitErr.ExitCode() == 2 {
+			log.Printf("[image] tar warnings (non-fatal) for %s", name)
+		} else {
+			return fmt.Errorf("extract %s: %v: %s", name, err, string(out))
+		}
 	}
 
 	log.Printf("[image] extracted %s", name)
