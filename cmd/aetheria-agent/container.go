@@ -32,11 +32,13 @@ const (
 
 // Container tracks a running container's state.
 type Container struct {
-	Name    string `json:"name"`
-	Rootfs  string `json:"rootfs"`
-	Pid     int    `json:"pid"`
-	Status  string `json:"status"` // "created", "running", "stopped"
-	Image   string `json:"image"`
+	Name    string      `json:"name"`
+	Rootfs  string      `json:"rootfs"`
+	Pid     int         `json:"pid"`
+	Status  string      `json:"status"` // "created", "running", "stopped"
+	Image   string      `json:"image"`
+	Network NetworkMode `json:"network"`
+	IP      string      `json:"ip,omitempty"` // bridge mode: assigned IP
 	cmd     *exec.Cmd
 }
 
@@ -56,10 +58,23 @@ func NewContainerManager() *ContainerManager {
 
 // ── RPC parameter types ──
 
+// NetworkMode controls container network isolation.
+//   - "host":   share VM network namespace (no isolation, default)
+//   - "bridge": own net namespace + veth pair + br0 bridge + NAT
+//   - "none":   own net namespace with no connectivity
+type NetworkMode string
+
+const (
+	NetHost   NetworkMode = "host"
+	NetBridge NetworkMode = "bridge"
+	NetNone   NetworkMode = "none"
+)
+
 type ContainerCreateParams struct {
-	Name   string `json:"name"`
-	Rootfs string `json:"rootfs"` // path to rootfs directory
-	Image  string `json:"image"`  // image name (for display)
+	Name    string      `json:"name"`
+	Rootfs  string      `json:"rootfs"`  // path to rootfs directory
+	Image   string      `json:"image"`   // image name (for display)
+	Network NetworkMode `json:"network"` // "host", "bridge", "none" (default: "bridge")
 }
 
 type ContainerExecParams struct {
@@ -126,11 +141,17 @@ func (cm *ContainerManager) Create(params ContainerCreateParams) error {
 		return fmt.Errorf("container %q already exists", params.Name)
 	}
 
+	netMode := params.Network
+	if netMode == "" {
+		netMode = NetBridge // default: isolated bridge networking
+	}
+
 	cm.containers[params.Name] = &Container{
-		Name:   params.Name,
-		Rootfs: rootfs,
-		Status: "created",
-		Image:  params.Image,
+		Name:    params.Name,
+		Rootfs:  rootfs,
+		Status:  "created",
+		Image:   params.Image,
+		Network: netMode,
 	}
 
 	log.Printf("[container] created %q (rootfs=%s)", params.Name, rootfs)
@@ -154,10 +175,8 @@ func (cm *ContainerManager) Start(name string) error {
 		os.MkdirAll(filepath.Join(c.Rootfs, dir), 0755)
 	}
 
-	// Create the container init process.
-	// We re-exec ourselves with a special argument to enter the namespace.
-	// This is the standard pattern (used by Docker, containerd, runc).
-	cmd := reexecContainer(c.Rootfs, name)
+	// Create the container init process with appropriate namespace flags.
+	cmd := reexecContainer(c.Rootfs, name, c.Network)
 	cmd.Stdin = nil
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
@@ -170,6 +189,19 @@ func (cm *ContainerManager) Start(name string) error {
 	c.Pid = cmd.Process.Pid
 	c.Status = "running"
 	c.cmd = cmd
+
+	// For bridge mode: set up veth pair + bridge after the container starts
+	// (need the PID for moving veth into the container's net namespace).
+	if c.Network == NetBridge {
+		ip, err := setupBridgeNetwork(name, c.Pid)
+		if err != nil {
+			log.Printf("[container] bridge network setup failed: %v", err)
+			// Non-fatal: container runs without network
+		} else {
+			c.IP = ip
+		}
+	}
+
 	cm.mu.Unlock()
 
 	log.Printf("[container] started %q pid=%d", name, c.Pid)
@@ -177,10 +209,15 @@ func (cm *ContainerManager) Start(name string) error {
 	// Wait for container to exit in background.
 	go func() {
 		cmd.Wait()
+		// Clean up bridge networking if applicable.
+		if c.Network == NetBridge {
+			teardownBridgeNetwork(name)
+		}
 		cm.mu.Lock()
 		c.Status = "stopped"
 		c.Pid = 0
 		c.cmd = nil
+		c.IP = ""
 		cm.mu.Unlock()
 		log.Printf("[container] %q exited", name)
 	}()
@@ -257,6 +294,7 @@ func (cm *ContainerManager) Exec(params ContainerExecParams) (ExecResult, error)
 		return ExecResult{}, fmt.Errorf("container %q is not running", params.Name)
 	}
 	pid := c.Pid
+	network := c.Network
 	cm.mu.Unlock()
 
 	// Verify the container process is still alive before nsenter.
@@ -265,11 +303,16 @@ func (cm *ContainerManager) Exec(params ContainerExecParams) (ExecResult, error)
 	}
 
 	// Use nsenter to exec inside the container's namespaces.
+	// Always enter PID, mount, UTS, IPC. Enter net namespace only if
+	// the container has its own (bridge or none mode).
 	args := []string{
 		"-t", fmt.Sprintf("%d", pid),
 		"-p", "-m", "-u", "-i",
-		"--",
 	}
+	if network == NetBridge || network == NetNone {
+		args = append(args, "-n") // also enter network namespace
+	}
+	args = append(args, "--")
 	if len(params.Args) == 0 {
 		args = append(args, "/bin/sh", "-c", params.Cmd)
 	} else {
@@ -325,13 +368,21 @@ const containerInitArg = "__aetheria_container_init__"
 
 // reexecContainer creates a command that re-execs the agent binary
 // with namespace flags. The child process calls containerInit().
-func reexecContainer(rootfs, hostname string) *exec.Cmd {
+func reexecContainer(rootfs, hostname string, network NetworkMode) *exec.Cmd {
 	cmd := exec.Command("/proc/self/exe", containerInitArg, rootfs, hostname)
+	flags := syscall.CLONE_NEWPID |
+		syscall.CLONE_NEWNS |
+		syscall.CLONE_NEWUTS |
+		syscall.CLONE_NEWIPC
+
+	// bridge and none modes get their own network namespace.
+	// host mode shares the VM's network namespace.
+	if network == NetBridge || network == NetNone {
+		flags |= syscall.CLONE_NEWNET
+	}
+
 	cmd.SysProcAttr = &syscall.SysProcAttr{
-		Cloneflags: syscall.CLONE_NEWPID |
-			syscall.CLONE_NEWNS |
-			syscall.CLONE_NEWUTS |
-			syscall.CLONE_NEWIPC,
+		Cloneflags: uintptr(flags),
 	}
 	return cmd
 }

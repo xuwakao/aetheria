@@ -78,15 +78,20 @@ func main() {
 		cmdStop()
 	case "create":
 		if len(os.Args) < 3 {
-			fmt.Fprintln(os.Stderr, "usage: aetheria create <distro> [name]")
+			fmt.Fprintln(os.Stderr, "usage: aetheria create <distro> [name] [--net=host|bridge|none]")
 			os.Exit(1)
 		}
 		image := os.Args[2]
 		name := image
-		if len(os.Args) >= 4 {
-			name = os.Args[3]
+		network := "bridge" // default
+		for i := 3; i < len(os.Args); i++ {
+			if strings.HasPrefix(os.Args[i], "--net=") {
+				network = strings.TrimPrefix(os.Args[i], "--net=")
+			} else if name == image {
+				name = os.Args[i]
+			}
 		}
-		cmdContainerCreate(image, name)
+		cmdContainerCreate(image, name, network)
 	case "start":
 		if len(os.Args) < 3 {
 			fmt.Fprintln(os.Stderr, "usage: aetheria start <name>")
@@ -496,7 +501,7 @@ func cmdStop() {
 // Container commands
 // ============================================================================
 
-func cmdContainerCreate(image, name string) {
+func cmdContainerCreate(image, name, network string) {
 	// First pull the image, then create the container.
 	fmt.Printf("Pulling %s...\n", image)
 	resp, err := sendToDaemon(Request{
@@ -512,10 +517,10 @@ func cmdContainerCreate(image, name string) {
 		os.Exit(1)
 	}
 
-	fmt.Printf("Creating container %s...\n", name)
+	fmt.Printf("Creating container %s (network=%s)...\n", name, network)
 	resp, err = sendToDaemon(Request{
 		Method: "container.create",
-		Params: map[string]interface{}{"name": name, "image": image},
+		Params: map[string]interface{}{"name": name, "image": image, "network": network},
 	})
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "create: %v\n", err)
@@ -607,14 +612,16 @@ func cmdContainerList() {
 		fmt.Println("No containers.")
 		return
 	}
-	fmt.Printf("%-20s %-10s %-8s %s\n", "NAME", "STATUS", "PID", "IMAGE")
+	fmt.Printf("%-16s %-10s %-8s %-8s %-16s %s\n", "NAME", "STATUS", "PID", "NETWORK", "IP", "IMAGE")
 	for _, c := range containers {
 		pid := ""
 		if p, ok := c["pid"].(float64); ok && p > 0 {
 			pid = fmt.Sprintf("%.0f", p)
 		}
-		fmt.Printf("%-20s %-10s %-8s %s\n",
-			c["name"], c["status"], pid, c["image"])
+		ip, _ := c["ip"].(string)
+		net, _ := c["network"].(string)
+		fmt.Printf("%-16s %-10s %-8s %-8s %-16s %s\n",
+			c["name"], c["status"], pid, net, ip, c["image"])
 	}
 }
 
