@@ -14,7 +14,6 @@ import (
 	"log"
 	"os"
 	"os/exec"
-	"sync"
 	"syscall"
 	"unsafe"
 )
@@ -148,27 +147,30 @@ func StartShell(containerName string, pid int, network NetworkMode) (*ShellSessi
 // ReadWriteCloser (typically a vsock connection). Blocks until the shell
 // exits or the connection closes.
 func (s *ShellSession) StreamTo(conn io.ReadWriteCloser) {
-	var wg sync.WaitGroup
-	wg.Add(2)
+	done := make(chan struct{}, 2)
 
 	// conn → PTY master (user input)
 	go func() {
-		defer wg.Done()
 		io.Copy(s.master, conn)
-		// Input closed — user disconnected or shell exited.
+		done <- struct{}{}
 	}()
 
 	// PTY master → conn (shell output)
 	go func() {
-		defer wg.Done()
 		io.Copy(conn, s.master)
+		done <- struct{}{}
 	}()
 
-	// Wait for shell to exit, then clean up.
-	<-s.done
+	// Wait for shell to exit OR either copy to finish.
+	select {
+	case <-s.done: // shell process exited
+	case <-done: // one direction closed
+	}
+
+	// Close both to unblock the other goroutine.
 	s.master.Close()
 	conn.Close()
-	wg.Wait()
+	<-done // wait for second goroutine
 
 	log.Printf("[shell] session ended for container %s", s.containerName)
 }

@@ -740,14 +740,17 @@ func bridgePTYStreams(agentPtyListener, cliPtyListener net.Listener) {
 		}
 
 		// Bridge: CLI ↔ agent (raw bytes).
+		// When either side closes (shell exit or CLI disconnect),
+		// close BOTH connections to unblock the other io.Copy.
 		go func() {
-			var wg sync.WaitGroup
-			wg.Add(2)
-			go func() { defer wg.Done(); io.Copy(agentConn, cliConn) }()
-			go func() { defer wg.Done(); io.Copy(cliConn, agentConn) }()
-			wg.Wait()
-			agentConn.Close()
-			cliConn.Close()
+			ac, cc := agentConn, cliConn
+			done := make(chan struct{}, 2)
+			go func() { io.Copy(ac, cc); done <- struct{}{} }()
+			go func() { io.Copy(cc, ac); done <- struct{}{} }()
+			<-done        // first direction finished (shell exited or CLI disconnected)
+			ac.Close()    // close both to unblock the other goroutine
+			cc.Close()
+			<-done        // wait for second goroutine
 		}()
 	}
 }
