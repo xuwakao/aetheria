@@ -68,11 +68,22 @@ type InfoResult struct {
 	GoVer    string `json:"go_version"`
 }
 
+// Global container manager, initialized in main().
+var containers *ContainerManager
+
 func main() {
+	// If re-exec'd as container init, run container setup and never return.
+	if isContainerInit() {
+		containerInit()
+		os.Exit(1) // unreachable
+	}
+
 	log.SetPrefix("[agent] ")
 	log.SetFlags(log.Ltime)
 
 	log.Println("aetheria-agent starting")
+
+	containers = NewContainerManager()
 
 	// Reconnection loop: if host disconnects (e.g., daemon restart),
 	// agent reconnects automatically.
@@ -192,6 +203,11 @@ func handleConnection(conn *vsockConn) {
 }
 
 func handleRequest(req Request) Response {
+	// Route container.* methods to the container manager.
+	if strings.HasPrefix(req.Method, "container.") {
+		return containers.HandleRPC(req)
+	}
+
 	switch req.Method {
 	case "ping":
 		return Response{Result: "pong", ID: req.ID}

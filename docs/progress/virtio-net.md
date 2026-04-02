@@ -56,6 +56,51 @@ All compilation errors resolved. Key fixes:
 Build: `cargo build --no-default-features --features net --release` ✅
 Runtime: requires `sudo` for vmnet — untested (needs user to run interactively)
 
+### [2026-03-31T22:50] Phase 4 — End-to-end vmnet networking
+
+**5 bugs found and fixed:**
+
+| # | Bug | Root Cause | Fix |
+|---|-----|-----------|-----|
+| 1 | vmnet_start_interface returns NULL | `VMNET_SHARED_MODE` defined as `1` in Rust, actual value is `1001` | `vmnet_tap.rs:61` — changed constant to `1001` |
+| 2 | `CONFIG_VIRTIO_NET` missing from built kernel | `CONFIG_NETDEVICES=y` missing from defconfig (parent toggle) | Added to `aetheria_arm64_defconfig` |
+| 3 | TX EBADF (Bad file descriptor) | `volatile_impl!` macro routes I/O through pipe fd, not vmnet FFI | Manual `FileReadWriteVolatile` impl using vmnet_helper_read/write |
+| 4 | Guest uses wrong MAC address | `None` passed as mac_addr to `Net::new()` | Pass `tap.mac_address().ok()` from VmnetTap |
+| 5 | RX never called — zero packets received | `RxTap` WaitContext only registered for Linux/Android, not macOS | Added `target_os = "macos"` to cfg gate in `net.rs:384` |
+| 6 | vnet_hdr corruption — DHCP discover garbled | Guest prepends 12-byte `virtio_net_hdr_v1`; vmnet expects raw Ethernet | TX: strip header via `reader.consume(12)`; RX: prepend zeroed header |
+
+**Result**: DHCP lease obtained: `192.168.64.86` from `192.168.64.1`
+
+### Review: Phase 4
+
+| # | Expected Result | Actual Result | Evidence | Verdict |
+|---|-----------------|---------------|----------|---------|
+| 1 | vmnet interface created | SUCCESS, status=1000 | `vmnet: started shared interface mac=... mtu=1500` | PASS |
+| 2 | Kernel sees virtio-net | PCI device enumerated, driver probes | `pci 0000:00:02.0: [1af4:1041]`, `virtio_net virtio1` | PASS |
+| 3 | DHCP lease | `192.168.64.86` from `192.168.64.1` | `udhcpc: lease of 192.168.64.86 obtained` | PASS |
+| 4 | TX/RX functional | Both directions working | TX: valid Ethernet frames, RX: DHCP offer received | PASS |
+
+**Overall Verdict**: PASS
+**Findings this phase**: 6 (F-002 through F-007)
+
 ## Plan Corrections
 
 ## Findings
+
+### F-002: VMNET_SHARED_MODE constant value
+Apple's vmnet.h defines `VMNET_SHARED_MODE = 1001`, not `1`. The Rust constant was incorrectly set to `1`, causing immediate NULL return from vmnet_start_interface.
+
+### F-003: CONFIG_NETDEVICES parent toggle
+`CONFIG_VIRTIO_NET=y` requires `CONFIG_NETDEVICES=y` as a parent toggle in Kconfig. Without it, the kernel silently ignores the VIRTIO_NET setting.
+
+### F-004: volatile_impl! incompatible with vmnet
+The `base::volatile_impl!` macro generates `FileReadWriteVolatile` using `libc::read/write` on `as_raw_fd()`. For VmnetTap, this fd is the notification pipe (read end), not a device fd. Writing to a pipe read end = EBADF. Must implement the trait manually using vmnet FFI.
+
+### F-005: RxTap WaitContext platform gate
+The RxTap event source registration in `net.rs` uses `#[cfg(any(target_os = "android", target_os = "linux"))]`, excluding macOS. Without RxTap registration, the worker thread never polls for incoming packets.
+
+### F-006: vnet_hdr mismatch between virtio and vmnet
+Virtio-net with `VIRTIO_F_VERSION_1` always prepends a 12-byte `virtio_net_hdr_v1` to packets. Linux TAP with `IFF_VNET_HDR` handles this transparently. vmnet.framework expects raw Ethernet frames. TX must strip the header; RX must prepend a zeroed header.
+
+### F-007: HVF does not interfere with vmnet
+Tested: vmnet_start_interface works before, during, and after hv_vm_create. The Hypervisor.framework and vmnet.framework are independent — no interference.
