@@ -71,17 +71,31 @@ func ensureBridge() error {
 			log.Printf("[network] ip_forward: %v", e)
 		}
 
-		// NAT: masquerade traffic from bridge subnet going out via any interface.
-		if e := run("iptables", "-t", "nat", "-A", "POSTROUTING",
-			"-s", bridgeSubnet+".0/24", "!", "-o", bridgeName,
-			"-j", "MASQUERADE"); e != nil {
-			log.Printf("[network] iptables NAT: %v", e)
+		// NAT: masquerade traffic from bridge subnet.
+		// Use nft (nftables) with full path. Alpine's iptables uses nftables
+		// backend which has compatibility issues with MASQUERADE.
+		nft := "/usr/sbin/nft"
+		if e := run(nft, "add", "table", "ip", "aetheria_nat"); e != nil {
+			log.Printf("[network] nft table: %v", e)
+		}
+		run(nft, "add", "chain", "ip", "aetheria_nat", "postrouting",
+			"{ type nat hook postrouting priority 100 ; }")
+		if e := run(nft, "add", "rule", "ip", "aetheria_nat", "postrouting",
+			"ip", "saddr", bridgeSubnet+".0/24", "masquerade"); e != nil {
+			// Fallback: iptables-legacy (uses old kernel API, more reliable)
+			log.Printf("[network] nft masquerade failed (%v), trying iptables-legacy", e)
+			run("/usr/sbin/iptables-legacy", "-t", "nat", "-A", "POSTROUTING",
+				"-s", bridgeSubnet+".0/24", "!", "-o", bridgeName,
+				"-j", "MASQUERADE")
 		}
 
 		// Allow forwarding between bridge and external.
-		run("iptables", "-A", "FORWARD", "-i", bridgeName, "-j", "ACCEPT")
-		run("iptables", "-A", "FORWARD", "-o", bridgeName, "-m", "state",
-			"--state", "RELATED,ESTABLISHED", "-j", "ACCEPT")
+		run(nft, "add", "chain", "ip", "aetheria_nat", "forward",
+			"{ type filter hook forward priority 0 ; }")
+		run(nft, "add", "rule", "ip", "aetheria_nat", "forward",
+			"iifname", bridgeName, "accept")
+		run(nft, "add", "rule", "ip", "aetheria_nat", "forward",
+			"oifname", bridgeName, "ct", "state", "established,related", "accept")
 
 		log.Printf("[network] bridge %s ready, NAT enabled", bridgeName)
 	})
