@@ -26,8 +26,11 @@ import (
 )
 
 const (
+	// Image tarballs cached on virtiofs (host filesystem, terabytes available).
+	// Container overlayfs upper/work dirs on ext4 rootfs (1.6GB available).
+	// NOT tmpfs — apt install easily fills 243MB tmpfs.
 	containersDir = "/var/aetheria/containers"
-	imagesDir     = "/var/aetheria/images"
+	imagesDir     = "/mnt/host/aetheria-data/images"
 )
 
 // Container tracks a running container's state.
