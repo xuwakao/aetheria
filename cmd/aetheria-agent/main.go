@@ -203,9 +203,12 @@ func handleConnection(conn *vsockConn) {
 }
 
 func handleRequest(req Request) Response {
-	// Route container.* methods to the container manager.
+	// Route container.* and image.* methods.
 	if strings.HasPrefix(req.Method, "container.") {
 		return containers.HandleRPC(req)
+	}
+	if strings.HasPrefix(req.Method, "image.") {
+		return handleImageRPC(req)
 	}
 
 	switch req.Method {

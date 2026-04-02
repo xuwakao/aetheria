@@ -100,11 +100,16 @@ func (cm *ContainerManager) Create(params ContainerCreateParams) error {
 	}
 
 	rootfs := params.Rootfs
-	if rootfs == "" {
+	if rootfs == "" && params.Image != "" {
+		// Auto-prepare rootfs from image.
+		var err error
+		rootfs, err = PrepareContainerRootfs(params.Name, params.Image)
+		if err != nil {
+			return fmt.Errorf("prepare rootfs from image %q: %w", params.Image, err)
+		}
+	} else if rootfs == "" {
 		rootfs = filepath.Join(containersDir, params.Name, "rootfs")
 	}
-	// Ensure rootfs is under containersDir or an absolute path provided
-	// explicitly (custom rootfs from the host CLI, which is trusted).
 	if !filepath.IsAbs(rootfs) {
 		return fmt.Errorf("rootfs must be an absolute path: %s", rootfs)
 	}
