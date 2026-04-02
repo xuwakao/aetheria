@@ -18,6 +18,7 @@ import (
 	"bufio"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net"
 	"os"
 	"os/exec"
@@ -26,15 +27,18 @@ import (
 	"sync"
 	"syscall"
 	"time"
+	"unsafe"
 )
 
 const (
 	// vsock agent connection: crosvm maps vsock CID=2 port=1024 to this Unix socket.
 	vsockDir  = "/tmp/aetheria-vsock-3"
 	agentSock = vsockDir + "/port-1024"
+	ptySock   = vsockDir + "/port-1025" // PTY byte stream
 
 	// Daemon control socket: CLI commands connect here.
-	daemonSock = "/tmp/aetheria.sock"
+	daemonSock    = "/tmp/aetheria.sock"
+	ptyDaemonSock = "/tmp/aetheria-pty.sock" // PTY forwarding socket for CLI
 )
 
 type Request struct {
@@ -103,7 +107,7 @@ func main() {
 			fmt.Fprintln(os.Stderr, "usage: aetheria shell <name>")
 			os.Exit(1)
 		}
-		cmdContainerExec(os.Args[2], "/bin/sh -l")
+		cmdShell(os.Args[2])
 	case "ls":
 		cmdContainerList()
 	case "rm":
@@ -248,15 +252,37 @@ func cmdRun() {
 	// Clean up sockets
 	os.MkdirAll(vsockDir, 0755)
 	os.Remove(agentSock)
+	os.Remove(ptySock)
 	os.Remove(daemonSock)
+	os.Remove(ptyDaemonSock)
 
-	// 1. Listen for agent vsock connection
+	// 1. Listen for agent vsock connection (JSON-RPC)
 	agentListener, err := net.Listen("unix", agentSock)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "agent listen: %v\n", err)
 		os.Exit(1)
 	}
 	defer agentListener.Close()
+
+	// 1b. Listen for agent PTY stream connections
+	ptyListener, err := net.Listen("unix", ptySock)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "pty listen: %v\n", err)
+		os.Exit(1)
+	}
+	defer ptyListener.Close()
+
+	// 1c. Listen for CLI PTY forwarding connections
+	ptyDaemonListener, err := net.Listen("unix", ptyDaemonSock)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "pty daemon listen: %v\n", err)
+		os.Exit(1)
+	}
+	defer ptyDaemonListener.Close()
+	defer os.Remove(ptyDaemonSock)
+
+	// Bridge PTY connections: agent → ptyDaemon → CLI
+	go bridgePTYStreams(ptyListener, ptyDaemonListener)
 
 	// 2. Listen for CLI commands
 	cliListener, err := net.Listen("unix", daemonSock)
@@ -562,6 +588,165 @@ func cmdContainerAction(method, name string) {
 		os.Exit(1)
 	}
 	fmt.Println(strings.Trim(string(resp.Result), `"`))
+}
+
+// cmdShell opens an interactive terminal session in a container.
+func cmdShell(name string) {
+	// 1. Send container.shell RPC to start PTY on the agent side.
+	resp, err := sendToDaemon(Request{
+		Method: "container.shell",
+		Params: map[string]interface{}{"name": name, "rows": 24, "cols": 80},
+	})
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "shell: %v\n", err)
+		os.Exit(1)
+	}
+	if resp.Error != "" {
+		fmt.Fprintf(os.Stderr, "shell: %s\n", resp.Error)
+		os.Exit(1)
+	}
+
+	// 2. Give agent a moment to dial the PTY stream.
+	time.Sleep(500 * time.Millisecond)
+
+	// 3. Connect to the daemon's PTY forwarding socket.
+	conn, err := net.DialTimeout("unix", ptyDaemonSock, 5*time.Second)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "connect pty: %v\n", err)
+		os.Exit(1)
+	}
+	defer conn.Close()
+
+	// Send container name to identify the session.
+	conn.Write([]byte(name + "\n"))
+
+	// 4. Set terminal to raw mode.
+	oldState, err := makeRaw(os.Stdin.Fd())
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "raw mode: %v\n", err)
+		os.Exit(1)
+	}
+	defer restoreTerminal(os.Stdin.Fd(), oldState)
+
+	// 5. Bidirectional copy: stdin ↔ PTY stream ↔ stdout
+	done := make(chan struct{})
+	go func() {
+		io.Copy(conn, os.Stdin)
+		close(done)
+	}()
+	io.Copy(os.Stdout, conn)
+	<-done
+}
+
+// Terminal raw mode via tcgetattr/tcsetattr.
+type termios syscall.Termios
+
+func makeRaw(fd uintptr) (*termios, error) {
+	var old termios
+	if _, _, errno := syscall.Syscall6(syscall.SYS_IOCTL, fd,
+		uintptr(getTermiosReq()), uintptr(unsafe.Pointer(&old)),
+		0, 0, 0); errno != 0 {
+		return nil, errno
+	}
+	raw := old
+	raw.Iflag &^= syscall.IGNBRK | syscall.BRKINT | syscall.PARMRK |
+		syscall.ISTRIP | syscall.INLCR | syscall.IGNCR | syscall.ICRNL | syscall.IXON
+	raw.Oflag &^= syscall.OPOST
+	raw.Lflag &^= syscall.ECHO | syscall.ECHONL | syscall.ICANON |
+		syscall.ISIG | syscall.IEXTEN
+	raw.Cflag &^= syscall.CSIZE | syscall.PARENB
+	raw.Cflag |= syscall.CS8
+	raw.Cc[syscall.VMIN] = 1
+	raw.Cc[syscall.VTIME] = 0
+	if _, _, errno := syscall.Syscall6(syscall.SYS_IOCTL, fd,
+		uintptr(setTermiosReq()), uintptr(unsafe.Pointer(&raw)),
+		0, 0, 0); errno != 0 {
+		return nil, errno
+	}
+	return &old, nil
+}
+
+func restoreTerminal(fd uintptr, state *termios) {
+	syscall.Syscall6(syscall.SYS_IOCTL, fd,
+		uintptr(setTermiosReq()), uintptr(unsafe.Pointer(state)),
+		0, 0, 0)
+}
+
+// Platform-specific ioctl numbers for termios.
+// CLI runs on macOS (host).
+func getTermiosReq() uint64 {
+	return syscall.TIOCGETA // macOS: 0x40487413
+}
+
+func setTermiosReq() uint64 {
+	return syscall.TIOCSETA // macOS: 0x80487414
+}
+
+// bridgePTYStreams connects agent PTY vsock streams to CLI PTY daemon streams.
+// When agent dials port 1025, it sends the container name as a header line.
+// The daemon holds the connection. When CLI connects to ptyDaemonSock with
+// the same container name, the daemon bridges the two streams.
+func bridgePTYStreams(agentPtyListener, cliPtyListener net.Listener) {
+	pendingAgentConns := make(map[string]net.Conn)
+	var mu sync.Mutex
+
+	// Accept agent PTY connections.
+	go func() {
+		for {
+			conn, err := agentPtyListener.Accept()
+			if err != nil {
+				return
+			}
+			// Read container name header (first line).
+			buf := make([]byte, 256)
+			n, err := conn.Read(buf)
+			if err != nil || n == 0 {
+				conn.Close()
+				continue
+			}
+			name := strings.TrimSpace(string(buf[:n]))
+			mu.Lock()
+			pendingAgentConns[name] = conn
+			mu.Unlock()
+			fmt.Printf("[pty] agent stream ready for %s\n", name)
+		}
+	}()
+
+	// Accept CLI PTY connections and bridge.
+	for {
+		cliConn, err := cliPtyListener.Accept()
+		if err != nil {
+			return
+		}
+		// Read container name from CLI.
+		buf := make([]byte, 256)
+		n, _ := cliConn.Read(buf)
+		name := strings.TrimSpace(string(buf[:n]))
+
+		mu.Lock()
+		agentConn, ok := pendingAgentConns[name]
+		if ok {
+			delete(pendingAgentConns, name)
+		}
+		mu.Unlock()
+
+		if !ok {
+			fmt.Fprintf(os.Stderr, "[pty] no agent stream for %s\n", name)
+			cliConn.Close()
+			continue
+		}
+
+		// Bridge: CLI ↔ agent (raw bytes).
+		go func() {
+			var wg sync.WaitGroup
+			wg.Add(2)
+			go func() { defer wg.Done(); io.Copy(agentConn, cliConn) }()
+			go func() { defer wg.Done(); io.Copy(cliConn, agentConn) }()
+			wg.Wait()
+			agentConn.Close()
+			cliConn.Close()
+		}()
+	}
 }
 
 func cmdContainerExec(name, command string) {

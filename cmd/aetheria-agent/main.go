@@ -85,6 +85,9 @@ func main() {
 
 	containers = NewContainerManager()
 
+	// Start PTY stream listener on a separate vsock port.
+	go listenPTYStreams()
+
 	// Reconnection loop: if host disconnects (e.g., daemon restart),
 	// agent reconnects automatically.
 	for {
@@ -203,7 +206,10 @@ func handleConnection(conn *vsockConn) {
 }
 
 func handleRequest(req Request) Response {
-	// Route container.* and image.* methods.
+	// Route container.*, image.*, and shell RPCs.
+	if req.Method == "container.shell" {
+		return handleShellRPC(req)
+	}
 	if strings.HasPrefix(req.Method, "container.") {
 		return containers.HandleRPC(req)
 	}
