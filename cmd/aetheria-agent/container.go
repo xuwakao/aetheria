@@ -21,6 +21,7 @@ import (
 	"strings"
 	"sync"
 	"syscall"
+	"time"
 )
 
 const (
@@ -72,7 +73,24 @@ type ContainerNameParams struct {
 
 // ── Container Lifecycle ──
 
+func validateContainerName(name string) error {
+	if name == "" {
+		return fmt.Errorf("container name is empty")
+	}
+	if strings.ContainsAny(name, "/\\. \t\n") {
+		return fmt.Errorf("container name %q contains invalid characters", name)
+	}
+	if len(name) > 64 {
+		return fmt.Errorf("container name too long (max 64)")
+	}
+	return nil
+}
+
 func (cm *ContainerManager) Create(params ContainerCreateParams) error {
+	if err := validateContainerName(params.Name); err != nil {
+		return err
+	}
+
 	cm.mu.Lock()
 	defer cm.mu.Unlock()
 
@@ -111,7 +129,6 @@ func (cm *ContainerManager) Start(name string) error {
 		cm.mu.Unlock()
 		return fmt.Errorf("container %q already running", name)
 	}
-	cm.mu.Unlock()
 
 	// Prepare container rootfs: ensure /proc, /sys, /dev, /tmp exist
 	for _, dir := range []string{"proc", "sys", "dev", "tmp", "etc", "root"} {
@@ -127,10 +144,10 @@ func (cm *ContainerManager) Start(name string) error {
 	cmd.Stderr = os.Stderr
 
 	if err := cmd.Start(); err != nil {
+		cm.mu.Unlock()
 		return fmt.Errorf("failed to start container: %w", err)
 	}
 
-	cm.mu.Lock()
 	c.Pid = cmd.Process.Pid
 	c.Status = "running"
 	c.cmd = cmd
@@ -166,9 +183,20 @@ func (cm *ContainerManager) Stop(name string) error {
 	pid := c.Pid
 	cm.mu.Unlock()
 
-	// Send SIGTERM, then SIGKILL after 5s.
+	// Send SIGTERM, then SIGKILL after 5s if still alive.
 	syscall.Kill(pid, syscall.SIGTERM)
 	log.Printf("[container] sent SIGTERM to %q pid=%d", name, pid)
+
+	go func() {
+		time.Sleep(5 * time.Second)
+		cm.mu.Lock()
+		stillRunning := c.Status == "running" && c.Pid == pid
+		cm.mu.Unlock()
+		if stillRunning {
+			log.Printf("[container] SIGKILL %q pid=%d (did not stop in 5s)", name, pid)
+			syscall.Kill(pid, syscall.SIGKILL)
+		}
+	}()
 	return nil
 }
 
@@ -449,8 +477,3 @@ func isContainerInit() bool {
 	return len(os.Args) >= 2 && os.Args[1] == containerInitArg
 }
 
-// ── Helper: check if string starts with prefix ──
-
-func hasMethodPrefix(method, prefix string) bool {
-	return strings.HasPrefix(method, prefix)
-}
