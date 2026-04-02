@@ -135,6 +135,10 @@ func (c *vsockConn) Write(b []byte) (int, error) {
 }
 
 func (c *vsockConn) Close() error {
+	// Shutdown first: triggers kernel vsock to send VIRTIO_VSOCK_OP_SHUTDOWN
+	// through the virtio TX queue. Without this, close() alone doesn't
+	// notify the host, and the host-side Unix socket never gets EOF.
+	syscall.Shutdown(c.fd, syscall.SHUT_RDWR)
 	return syscall.Close(c.fd)
 }
 
