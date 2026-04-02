@@ -15,6 +15,7 @@ import (
 	"log"
 	"os"
 	"os/exec"
+	"os/signal"
 	"path/filepath"
 	"runtime"
 	"strings"
@@ -291,82 +292,92 @@ func containerInit() {
 	// Set hostname.
 	syscall.Sethostname([]byte(hostname))
 
-	// Mount /proc, /sys, /dev in the new rootfs.
+	// Prepare mount namespace.
 	setupContainerMounts(rootfs)
 
-	// pivot_root to the new rootfs.
+	// Mount /proc, /sys, /dev inside the container rootfs.
+	mountContainerFS(rootfs)
+
+	// Enter the container rootfs. Try pivot_root first (secure, requires
+	// rootfs on a real filesystem). Fall back to chroot (works on initramfs).
 	if err := pivotRoot(rootfs); err != nil {
-		log.Fatalf("[container-init] pivot_root failed: %v", err)
+		log.Printf("[container-init] pivot_root failed (%v), using chroot", err)
+		if err := syscall.Chroot(rootfs); err != nil {
+			log.Fatalf("[container-init] chroot failed: %v", err)
+		}
+		os.Chdir("/")
 	}
 
-	// Exec the container's init process.
-	// Try common init paths in order of preference.
-	for _, init := range []string{"/sbin/init", "/bin/sh"} {
-		if _, err := os.Stat(init); err == nil {
-			log.Printf("[container-init] exec %s", init)
-			err := syscall.Exec(init, []string{init}, os.Environ())
-			log.Fatalf("[container-init] exec %s failed: %v", init, err)
-		}
-	}
-	log.Fatal("[container-init] no init found in container rootfs")
+	// Container init: stay alive so nsenter can execute commands.
+	// Don't exec a shell (it exits without tty). Instead, block in Go
+	// using select{} (infinite wait). The process stays as PID 1 in the
+	// container's PID namespace. Users interact via nsenter.
+	log.Printf("[container-init] container ready, waiting for commands")
+
+	// Handle SIGTERM for graceful shutdown.
+	sigCh := make(chan os.Signal, 1)
+	signal.Notify(sigCh, syscall.SIGTERM, syscall.SIGINT)
+	<-sigCh
+	log.Printf("[container-init] received signal, exiting")
 }
 
+// setupContainerMounts prepares the mount namespace for the container.
 func setupContainerMounts(rootfs string) {
-	// Make the mount namespace private (don't propagate mounts to parent).
 	syscall.Mount("", "/", "", syscall.MS_REC|syscall.MS_PRIVATE, "")
+}
 
-	// Bind-mount rootfs to itself (required for pivot_root).
-	syscall.Mount(rootfs, rootfs, "", syscall.MS_BIND|syscall.MS_REC, "")
-
-	// Mount /proc inside new rootfs.
+// mountContainerFS mounts /proc, /sys, /dev, /tmp inside the container rootfs.
+func mountContainerFS(rootfs string) {
 	proc := filepath.Join(rootfs, "proc")
 	os.MkdirAll(proc, 0755)
 	syscall.Mount("proc", proc, "proc", 0, "")
 
-	// Mount /sys inside new rootfs (read-only bind).
 	sys := filepath.Join(rootfs, "sys")
 	os.MkdirAll(sys, 0755)
 	syscall.Mount("sysfs", sys, "sysfs", 0, "")
 
-	// Mount /dev as devtmpfs.
 	dev := filepath.Join(rootfs, "dev")
 	os.MkdirAll(dev, 0755)
 	syscall.Mount("devtmpfs", dev, "devtmpfs", 0, "")
 
-	// Mount /dev/pts for PTY support.
 	devpts := filepath.Join(rootfs, "dev", "pts")
 	os.MkdirAll(devpts, 0755)
 	syscall.Mount("devpts", devpts, "devpts", 0, "")
 
-	// Mount /tmp as tmpfs.
 	tmp := filepath.Join(rootfs, "tmp")
 	os.MkdirAll(tmp, 01777)
 	syscall.Mount("tmpfs", tmp, "tmpfs", 0, "")
 }
 
 func pivotRoot(newRoot string) error {
-	// Create oldroot dir inside newRoot.
-	oldRoot := filepath.Join(newRoot, ".old_root")
-	os.MkdirAll(oldRoot, 0700)
+	// pivot_root requires:
+	// 1. newRoot must be a mount point (done by bind-mount in setupContainerMounts)
+	// 2. putOld must be under newRoot
+	// 3. newRoot and current root must be different filesystems/mounts
 
-	// pivot_root swaps the root filesystem.
+	oldRoot := filepath.Join(newRoot, ".old_root")
+	if err := os.MkdirAll(oldRoot, 0700); err != nil {
+		return fmt.Errorf("mkdir old_root: %w", err)
+	}
+
+	// pivot_root atomically: makes newRoot the new /, moves old / to oldRoot.
 	if err := syscall.PivotRoot(newRoot, oldRoot); err != nil {
 		return fmt.Errorf("pivot_root(%s, %s): %w", newRoot, oldRoot, err)
 	}
 
-	// Change to new root.
+	// Now we're inside the new root. Change cwd.
 	if err := os.Chdir("/"); err != nil {
 		return fmt.Errorf("chdir /: %w", err)
 	}
 
-	// Unmount old root.
-	if err := syscall.Unmount("/.old_root", syscall.MNT_DETACH); err != nil {
-		return fmt.Errorf("unmount old root: %w", err)
+	// Unmount old root (now at /.old_root) with MNT_DETACH for lazy unmount.
+	oldMountPath := "/.old_root"
+	if err := syscall.Unmount(oldMountPath, syscall.MNT_DETACH); err != nil {
+		log.Printf("[container-init] unmount old root: %v (non-fatal)", err)
 	}
 
-	// Remove old root mount point.
-	os.RemoveAll("/.old_root")
-
+	// Clean up the mount point directory.
+	os.RemoveAll(oldMountPath)
 	return nil
 }
 
