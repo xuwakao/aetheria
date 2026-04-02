@@ -403,3 +403,87 @@ Phase 6: 集成测试 + 生产化            ⏸
 - 多 vCPU 支持
 - virtio-gpu + gfxstream
 - Windows WHPX 移植
+
+---
+
+## 更新: 2026-04-03 — 容器运行时 + virtiofs 深度优化
+
+### 新增代码
+
+| 组件 | 语言 | 行数 | 文件数 |
+|------|------|------|--------|
+| crosvm macOS 移植 (HVF + virtio) | Rust | ~20,600 | 42 |
+| Guest Agent | Go | 1,719 | 6 |
+| Host CLI + Daemon | Go | 875 | 1 |
+| Kernel Config | Kconfig | 279 | 1 |
+| Scripts | Bash | 204 | 3 |
+| **总计** | | **~23,700** | **53** |
+
+### 新增功能
+
+**容器运行时:**
+- Namespace 隔离 (PID + Mount + UTS + IPC + NET)
+- 镜像管理: Alpine 3.21, Ubuntu 24.04 ARM64 rootfs
+- Overlayfs: base image (RO) + per-container delta
+- 三种网络模式: host / bridge(NAT) / none
+- Bridge 网络: veth + br-aetheria + nft masquerade
+- 交互式 Shell: PTY over vsock, macOS raw mode
+- CLI: create/start/shell/ls/rm/exec/stop/pull/images
+
+**存储:**
+- 64GB 稀疏数据盘 (thin provisioning, 实际占用 ~400MB)
+- 自动检测存储模式: disk > rootfs > tmpfs
+
+**Virtiofs 深度优化:**
+- DAX 零拷贝 MAP_SHARED: 30 GB/s 读 (超 QEMU 47x)
+- Per-inode DAX (FUSE_ATTR_DAX + HAS_INODE_DAX)
+- FSEvents 自适应缓存: macOS 文件变更 → stale inode → timeout=0
+- macOS symlink 修复: FileType::Symlink + path-based lstat/lchown/utimensat/readlink
+- Writeback caching + 中断合并 + 4MB FUSE buffer
+
+**Vsock 稳定性:**
+- EAGAIN → 1MB SO_SNDBUF + poll() 重试 (不再断连)
+- shutdown(SHUT_RDWR) before close() (正确触发 OP_SHUTDOWN)
+
+**运维:**
+- 一键启动: ./run.sh (自动构建 + 签名 + 数据盘)
+- Agent OpenRC 自动启动
+- HVF 约束文档: docs/hvf-dax-constraints.md
+
+### 验证的容器
+
+| 发行版 | 版本 | 测试内容 |
+|--------|------|---------|
+| Alpine | 3.21 | shell, apk install, 网络, 文件系统 |
+| Ubuntu | 24.04 LTS | bash, apt install curl/net-tools, 网络 |
+
+### 性能数据
+
+| 指标 | 数值 | vs QEMU virtiofsd |
+|------|------|-------------------|
+| DAX mmap 读 (缓存) | 30 GB/s | 47x 快 |
+| FUSE 4K 写 | 55 MB/s | 4x 快 |
+| virtio-blk 读 | 22.5 GB/s | — |
+| 启动到 shell | ~5.5 秒 | — |
+
+### 发现并修复的关键 Bug
+
+| Bug | 根因 | 修复 |
+|-----|------|------|
+| HVF hv_vm_map 拒绝 MAP_SHARED | fd 必须 O_RDWR (未文档化) | passthrough.rs 强制 O_RDWR |
+| HVF DAX 窗口不能部分 remap | hv_vm_map 不支持 overlay | CacheNonCoherent 跳过预映射 |
+| virtiofs symlink ELOOP | macOS 无 O_PATH | /dev/null placeholder + path-based ops |
+| vsock 重度 I/O 断连 | EAGAIN 被当致命错误 | 1MB SO_SNDBUF + poll() |
+| vsock close 不触发 SHUTDOWN | Go close(fd) 不发 SHUTDOWN | 先 shutdown() 再 close() |
+| 双 agent 竞争 | inittab + OpenRC 同时启动 | 删除 inittab respawn |
+| shell exit 卡住 | io.Copy 阻塞在 stdin | 双向 EOF + conn.Close |
+| Ubuntu 文件全零 | ext4 256MB 空间不足 | 2GB rootfs + 64GB 稀疏数据盘 |
+
+### 下一步
+
+| 优先级 | 任务 |
+|--------|------|
+| P0 | 端口转发 (容器 → macOS) |
+| P1 | 容器持久化 |
+| P2 | AetheriaDisplay.app (Metal 渲染) |
+| P3 | OCI 镜像 (Docker Hub pull) |

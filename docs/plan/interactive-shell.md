@@ -1,7 +1,7 @@
 # Plan: Interactive Shell (PTY)
 
 Created: 2026-04-02
-Status: ACTIVE
+Status: COMPLETED
 Source: P0 — core UX for `aetheria shell <name>`
 
 ## Task Description
