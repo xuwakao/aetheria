@@ -230,8 +230,16 @@ func (cm *ContainerManager) Remove(name string) error {
 		cm.mu.Unlock()
 		return fmt.Errorf("container %q is running, stop it first", name)
 	}
+	rootfs := c.Rootfs
 	delete(cm.containers, name)
 	cm.mu.Unlock()
+
+	// Clean up filesystem: unmount overlayfs (if mounted) and remove container dir.
+	syscall.Unmount(rootfs, syscall.MNT_DETACH) // ignore error if not an overlay mount
+	containerDir := filepath.Join(containersDir, name)
+	if err := os.RemoveAll(containerDir); err != nil {
+		log.Printf("[container] warning: failed to clean up %s: %v", containerDir, err)
+	}
 
 	log.Printf("[container] removed %q", name)
 	return nil
