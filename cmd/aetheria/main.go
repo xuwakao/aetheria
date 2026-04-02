@@ -629,13 +629,16 @@ func cmdShell(name string) {
 	defer restoreTerminal(os.Stdin.Fd(), oldState)
 
 	// 5. Bidirectional copy: stdin ↔ PTY stream ↔ stdout
-	done := make(chan struct{})
+	// When the shell exits, the agent closes the vsock connection.
+	// io.Copy(os.Stdout, conn) returns on EOF. But io.Copy(conn, os.Stdin)
+	// blocks forever on stdin.Read(). Fix: close conn after output ends
+	// to unblock the stdin goroutine, then return immediately.
 	go func() {
 		io.Copy(conn, os.Stdin)
-		close(done)
 	}()
 	io.Copy(os.Stdout, conn)
-	<-done
+	// Shell exited — output stream EOF. Close conn to unblock stdin copy.
+	conn.Close()
 }
 
 // Terminal raw mode via tcgetattr/tcsetattr.
