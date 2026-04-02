@@ -251,6 +251,11 @@ func (cm *ContainerManager) Exec(params ContainerExecParams) (ExecResult, error)
 	pid := c.Pid
 	cm.mu.Unlock()
 
+	// Verify the container process is still alive before nsenter.
+	if _, err := os.Stat(fmt.Sprintf("/proc/%d", pid)); os.IsNotExist(err) {
+		return ExecResult{}, fmt.Errorf("container %q process (pid %d) no longer exists", params.Name, pid)
+	}
+
 	// Use nsenter to exec inside the container's namespaces.
 	args := []string{
 		"-t", fmt.Sprintf("%d", pid),

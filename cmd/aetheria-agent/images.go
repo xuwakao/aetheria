@@ -18,6 +18,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"syscall"
 	"time"
 )
 
@@ -49,9 +50,8 @@ var imageRegistry = map[string]ImageInfo{
 		Name:    "debian",
 		Version: "12",
 		Arch:    "arm64",
-		// Debian doesn't have official minirootfs. Use debootstrap-generated tarball.
-		// For now, use a cloud image base from a mirror.
-		URL: "https://github.com/debuerreotype/docker-debian-artifacts/raw/dist-arm64v8/bookworm/rootfs.tar.xz",
+		// Official Debian cloud image from debian.org CDN.
+		URL: "https://cloud.debian.org/images/cloud/bookworm/latest/rootfs/debian-12-nocloud-arm64-rootfs.tar.xz",
 	},
 }
 
@@ -68,9 +68,18 @@ type ImageListResult struct {
 
 // ── Image Manager ──
 
-// imageCachePath returns the path to the cached tarball.
+// imageCachePath returns the path to the cached tarball, preserving
+// the original extension from the URL (e.g., .tar.gz or .tar.xz).
 func imageCachePath(name string) string {
-	return filepath.Join(imagesDir, name+".tar.gz")
+	info, ok := imageRegistry[name]
+	if !ok {
+		return filepath.Join(imagesDir, name+".tar.gz")
+	}
+	ext := ".tar.gz"
+	if strings.HasSuffix(info.URL, ".tar.xz") {
+		ext = ".tar.xz"
+	}
+	return filepath.Join(imagesDir, name+ext)
 }
 
 // imageExtractPath returns the path for the extracted base rootfs.
@@ -170,7 +179,8 @@ func ListImages() ImageListResult {
 		if e.IsDir() {
 			continue
 		}
-		name := strings.TrimSuffix(e.Name(), ".tar.gz")
+		fname := e.Name()
+		name := strings.TrimSuffix(strings.TrimSuffix(fname, ".tar.gz"), ".tar.xz")
 		if info, ok := imageRegistry[name]; ok {
 			fi, _ := e.Info()
 			info.Size = fi.Size()
@@ -181,38 +191,51 @@ func ListImages() ImageListResult {
 	return result
 }
 
-// PrepareContainerRootfs creates a container's rootfs from a base image.
-// For now: copies the base image rootfs. Future: overlay mount.
+// PrepareContainerRootfs creates a container's rootfs from a base image
+// using overlayfs (CoW). The base image is the read-only lower layer;
+// per-container changes go to the upper layer.
 func PrepareContainerRootfs(containerName, imageName string) (string, error) {
 	baseRootfs := imageExtractPath(imageName)
 	if _, err := os.Stat(filepath.Join(baseRootfs, "bin")); os.IsNotExist(err) {
-		// Image not extracted — try to pull it.
 		if err := PullImage(imageName); err != nil {
 			return "", fmt.Errorf("pull image %s: %w", imageName, err)
 		}
 	}
 
-	containerRootfs := filepath.Join(containersDir, containerName, "rootfs")
-	os.MkdirAll(containerRootfs, 0755)
+	containerDir := filepath.Join(containersDir, containerName)
+	merged := filepath.Join(containerDir, "rootfs")
+	upper := filepath.Join(containerDir, "upper")
+	work := filepath.Join(containerDir, "work")
 
-	// Check if already prepared.
-	if _, err := os.Stat(filepath.Join(containerRootfs, "bin")); err == nil {
-		return containerRootfs, nil
+	// Check if already mounted.
+	if _, err := os.Stat(filepath.Join(merged, "bin")); err == nil {
+		return merged, nil
 	}
 
-	// Copy base rootfs to container directory.
-	// Future: use overlayfs (lower=base, upper=container delta) for CoW.
-	log.Printf("[image] copying %s rootfs to %s", imageName, containerRootfs)
-	cmd := exec.Command("cp", "-a", baseRootfs+"/.", containerRootfs+"/")
-	if out, err := cmd.CombinedOutput(); err != nil {
-		return "", fmt.Errorf("copy rootfs: %v: %s", err, string(out))
+	for _, d := range []string{merged, upper, work} {
+		os.MkdirAll(d, 0755)
 	}
 
-	// Set up basic resolv.conf.
-	os.WriteFile(filepath.Join(containerRootfs, "etc", "resolv.conf"),
+	// Try overlayfs mount (requires CONFIG_OVERLAY_FS=y, confirmed in kernel).
+	opts := fmt.Sprintf("lowerdir=%s,upperdir=%s,workdir=%s", baseRootfs, upper, work)
+	err := syscall.Mount("overlay", merged, "overlay", 0, opts)
+	if err != nil {
+		// Fallback to cp -a if overlayfs not available.
+		log.Printf("[image] overlayfs failed (%v), falling back to cp -a", err)
+		cmd := exec.Command("cp", "-a", baseRootfs+"/.", merged+"/")
+		if out, cpErr := cmd.CombinedOutput(); cpErr != nil {
+			return "", fmt.Errorf("copy rootfs: %v: %s", cpErr, string(out))
+		}
+	} else {
+		log.Printf("[image] overlayfs mounted: lower=%s upper=%s", baseRootfs, upper)
+	}
+
+	// Set up DNS.
+	os.MkdirAll(filepath.Join(merged, "etc"), 0755)
+	os.WriteFile(filepath.Join(merged, "etc", "resolv.conf"),
 		[]byte("nameserver 8.8.8.8\nnameserver 1.1.1.1\n"), 0644)
 
-	return containerRootfs, nil
+	return merged, nil
 }
 
 // ── RPC handlers ──
