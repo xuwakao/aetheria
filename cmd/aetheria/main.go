@@ -76,6 +76,46 @@ func main() {
 		cmdInfo()
 	case "stop":
 		cmdStop()
+	case "create":
+		if len(os.Args) < 3 {
+			fmt.Fprintln(os.Stderr, "usage: aetheria create <distro> [name]")
+			os.Exit(1)
+		}
+		image := os.Args[2]
+		name := image
+		if len(os.Args) >= 4 {
+			name = os.Args[3]
+		}
+		cmdContainerCreate(image, name)
+	case "start":
+		if len(os.Args) < 3 {
+			fmt.Fprintln(os.Stderr, "usage: aetheria start <name>")
+			os.Exit(1)
+		}
+		cmdContainerAction("container.start", os.Args[2])
+	case "shell":
+		if len(os.Args) < 3 {
+			fmt.Fprintln(os.Stderr, "usage: aetheria shell <name>")
+			os.Exit(1)
+		}
+		cmdContainerExec(os.Args[2], "/bin/sh -l")
+	case "ls":
+		cmdContainerList()
+	case "rm":
+		if len(os.Args) < 3 {
+			fmt.Fprintln(os.Stderr, "usage: aetheria rm <name>")
+			os.Exit(1)
+		}
+		cmdContainerAction("container.stop", os.Args[2])
+		cmdContainerAction("container.remove", os.Args[2])
+	case "images":
+		cmdImageList()
+	case "pull":
+		if len(os.Args) < 3 {
+			fmt.Fprintln(os.Stderr, "usage: aetheria pull <distro>")
+			os.Exit(1)
+		}
+		cmdImagePull(os.Args[2])
 	default:
 		usage()
 		os.Exit(1)
@@ -83,14 +123,21 @@ func main() {
 }
 
 func usage() {
-	fmt.Fprintln(os.Stderr, `aetheria — lightweight Linux VM runtime
+	fmt.Fprintln(os.Stderr, `aetheria — lightweight Linux container runtime
 
 Usage:
-  aetheria run              Start the VM (daemon mode)
-  aetheria exec <command>   Execute a command in the VM
-  aetheria ping             Check if VM agent is running
-  aetheria info             Show VM information
-  aetheria stop             Shutdown the VM`)
+  aetheria run                 Start the VM (daemon mode)
+  aetheria create <distro>     Create a container (alpine, ubuntu, debian)
+  aetheria start <name>        Start a container
+  aetheria shell <name>        Open a shell in a running container
+  aetheria exec <command>      Execute a command in the VM
+  aetheria ls                  List containers
+  aetheria rm <name>           Stop and remove a container
+  aetheria pull <distro>       Download a distro rootfs image
+  aetheria images              List available/cached images
+  aetheria ping                Check if VM agent is running
+  aetheria info                Show VM information
+  aetheria stop                Shutdown the VM`)
 }
 
 // ============================================================================
@@ -439,6 +486,171 @@ func cmdStop() {
 		fmt.Println("Shutdown signal sent")
 	} else {
 		fmt.Println("VM shutting down...")
+	}
+}
+
+// ============================================================================
+// Container commands
+// ============================================================================
+
+func cmdContainerCreate(image, name string) {
+	// First pull the image, then create the container.
+	fmt.Printf("Pulling %s...\n", image)
+	resp, err := sendToDaemon(Request{
+		Method: "image.pull",
+		Params: map[string]string{"name": image},
+	})
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "pull: %v\n", err)
+		os.Exit(1)
+	}
+	if resp.Error != "" {
+		fmt.Fprintf(os.Stderr, "pull: %s\n", resp.Error)
+		os.Exit(1)
+	}
+
+	fmt.Printf("Creating container %s...\n", name)
+	resp, err = sendToDaemon(Request{
+		Method: "container.create",
+		Params: map[string]interface{}{"name": name, "image": image},
+	})
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "create: %v\n", err)
+		os.Exit(1)
+	}
+	if resp.Error != "" {
+		fmt.Fprintf(os.Stderr, "create: %s\n", resp.Error)
+		os.Exit(1)
+	}
+
+	// Auto-start.
+	fmt.Printf("Starting %s...\n", name)
+	resp, err = sendToDaemon(Request{
+		Method: "container.start",
+		Params: map[string]string{"name": name},
+	})
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "start: %v\n", err)
+		os.Exit(1)
+	}
+	if resp.Error != "" {
+		fmt.Fprintf(os.Stderr, "start: %s\n", resp.Error)
+		os.Exit(1)
+	}
+	fmt.Printf("Container %s is running. Use: aetheria shell %s\n", name, name)
+}
+
+func cmdContainerAction(method, name string) {
+	resp, err := sendToDaemon(Request{
+		Method: method,
+		Params: map[string]string{"name": name},
+	})
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "%v\n", err)
+		os.Exit(1)
+	}
+	if resp.Error != "" {
+		fmt.Fprintf(os.Stderr, "error: %s\n", resp.Error)
+		os.Exit(1)
+	}
+	fmt.Println(strings.Trim(string(resp.Result), `"`))
+}
+
+func cmdContainerExec(name, command string) {
+	resp, err := sendToDaemon(Request{
+		Method: "container.exec",
+		Params: map[string]interface{}{"name": name, "cmd": command},
+	})
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "%v\n", err)
+		os.Exit(1)
+	}
+	if resp.Error != "" {
+		fmt.Fprintf(os.Stderr, "error: %s\n", resp.Error)
+		os.Exit(1)
+	}
+	var result ExecResult
+	if err := json.Unmarshal(resp.Result, &result); err != nil {
+		fmt.Fprintf(os.Stderr, "parse: %v\n", err)
+		os.Exit(1)
+	}
+	if result.Stdout != "" {
+		fmt.Print(result.Stdout)
+	}
+	if result.Stderr != "" {
+		fmt.Fprint(os.Stderr, result.Stderr)
+	}
+	os.Exit(result.ExitCode)
+}
+
+func cmdContainerList() {
+	resp, err := sendToDaemon(Request{Method: "container.list"})
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "%v\n", err)
+		os.Exit(1)
+	}
+	if resp.Error != "" {
+		fmt.Fprintf(os.Stderr, "error: %s\n", resp.Error)
+		os.Exit(1)
+	}
+
+	var containers []map[string]interface{}
+	if err := json.Unmarshal(resp.Result, &containers); err != nil {
+		fmt.Fprintf(os.Stderr, "parse: %v\n", err)
+		os.Exit(1)
+	}
+
+	if len(containers) == 0 {
+		fmt.Println("No containers.")
+		return
+	}
+	fmt.Printf("%-20s %-10s %-8s %s\n", "NAME", "STATUS", "PID", "IMAGE")
+	for _, c := range containers {
+		pid := ""
+		if p, ok := c["pid"].(float64); ok && p > 0 {
+			pid = fmt.Sprintf("%.0f", p)
+		}
+		fmt.Printf("%-20s %-10s %-8s %s\n",
+			c["name"], c["status"], pid, c["image"])
+	}
+}
+
+func cmdImagePull(name string) {
+	fmt.Printf("Pulling %s...\n", name)
+	resp, err := sendToDaemon(Request{
+		Method: "image.pull",
+		Params: map[string]string{"name": name},
+	})
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "%v\n", err)
+		os.Exit(1)
+	}
+	if resp.Error != "" {
+		fmt.Fprintf(os.Stderr, "error: %s\n", resp.Error)
+		os.Exit(1)
+	}
+	fmt.Printf("Image %s ready.\n", name)
+}
+
+func cmdImageList() {
+	resp, err := sendToDaemon(Request{Method: "image.list"})
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "%v\n", err)
+		os.Exit(1)
+	}
+	if resp.Error != "" {
+		fmt.Fprintf(os.Stderr, "error: %s\n", resp.Error)
+		os.Exit(1)
+	}
+	var result map[string]interface{}
+	json.Unmarshal(resp.Result, &result)
+	fmt.Println("Available images:")
+	if avail, ok := result["available"].([]interface{}); ok {
+		for _, img := range avail {
+			if m, ok := img.(map[string]interface{}); ok {
+				fmt.Printf("  %-12s %s %s\n", m["name"], m["version"], m["arch"])
+			}
+		}
 	}
 }
 
