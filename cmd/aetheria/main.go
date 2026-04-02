@@ -606,13 +606,18 @@ func cmdShell(name string) {
 		os.Exit(1)
 	}
 
-	// 2. Give agent a moment to dial the PTY stream.
-	time.Sleep(500 * time.Millisecond)
-
-	// 3. Connect to the daemon's PTY forwarding socket.
-	conn, err := net.DialTimeout("unix", ptyDaemonSock, 5*time.Second)
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "connect pty: %v\n", err)
+	// 2. Connect to the daemon's PTY forwarding socket.
+	// Retry: the agent needs time to dial the PTY vsock stream to the daemon.
+	var conn net.Conn
+	for i := 0; i < 20; i++ {
+		time.Sleep(200 * time.Millisecond)
+		conn, err = net.DialTimeout("unix", ptyDaemonSock, 2*time.Second)
+		if err == nil {
+			break
+		}
+	}
+	if conn == nil {
+		fmt.Fprintf(os.Stderr, "connect pty: timed out\n")
 		os.Exit(1)
 	}
 	defer conn.Close()
@@ -700,14 +705,14 @@ func bridgePTYStreams(agentPtyListener, cliPtyListener net.Listener) {
 			if err != nil {
 				return
 			}
-			// Read container name header (first line).
-			buf := make([]byte, 256)
-			n, err := conn.Read(buf)
-			if err != nil || n == 0 {
+			// Read container name header (first line, newline-terminated).
+			reader := bufio.NewReader(conn)
+			line, err := reader.ReadString('\n')
+			if err != nil {
 				conn.Close()
 				continue
 			}
-			name := strings.TrimSpace(string(buf[:n]))
+			name := strings.TrimSpace(line)
 			mu.Lock()
 			pendingAgentConns[name] = conn
 			mu.Unlock()
@@ -721,10 +726,14 @@ func bridgePTYStreams(agentPtyListener, cliPtyListener net.Listener) {
 		if err != nil {
 			return
 		}
-		// Read container name from CLI.
-		buf := make([]byte, 256)
-		n, _ := cliConn.Read(buf)
-		name := strings.TrimSpace(string(buf[:n]))
+		// Read container name from CLI (newline-terminated).
+		cliReader := bufio.NewReader(cliConn)
+		line, err := cliReader.ReadString('\n')
+		if err != nil {
+			cliConn.Close()
+			continue
+		}
+		name := strings.TrimSpace(line)
 
 		mu.Lock()
 		agentConn, ok := pendingAgentConns[name]

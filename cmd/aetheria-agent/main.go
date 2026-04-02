@@ -85,9 +85,6 @@ func main() {
 
 	containers = NewContainerManager()
 
-	// Start PTY stream listener on a separate vsock port.
-	go listenPTYStreams()
-
 	// Reconnection loop: if host disconnects (e.g., daemon restart),
 	// agent reconnects automatically.
 	for {
