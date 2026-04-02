@@ -264,9 +264,12 @@ func cmdRun() {
 
 	// 3. Start crosvm
 	args := []string{
-		"run", "--no-usb",
+		"run",
+		"--mem", "512",
+		"--cpus", "2",
+		"--block", rootfs,
 		"--serial", "type=stdout,hardware=serial,num=1",
-		"--rwdisk", rootfs,
+		"-p", "root=/dev/vda rw console=ttyS0 earlycon=uart8250,mmio,0x3f8 loglevel=4",
 	}
 	if initrd != "" {
 		args = append(args, "--initrd", initrd)
