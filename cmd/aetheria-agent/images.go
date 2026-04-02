@@ -83,11 +83,12 @@ func imageCachePath(name string) string {
 }
 
 // imageExtractPath returns the path for the extracted base rootfs.
-// Extract to tmpfs (backed by VM RAM, not the 256MB ext4 rootfs which
-// is too small for Ubuntu ~70MB). NOT virtiofs because macOS APFS
-// symlinks are incompatible with Linux symlinks.
+// Uses the same storage backend as containers (ext4 disk or rootfs).
+// NOT virtiofs — macOS APFS lacks Linux symlink semantics.
 func imageExtractPath(name string) string {
-	return filepath.Join("/tmp/aetheria/images", name, "rootfs")
+	// Co-locate with containers on the selected storage backend.
+	base := filepath.Dir(containersDir) // e.g., /mnt/data, /var/aetheria, /tmp/aetheria
+	return filepath.Join(base, "images", name, "rootfs")
 }
 
 // PullImage downloads a distro rootfs tarball if not cached.

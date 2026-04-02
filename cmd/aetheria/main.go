@@ -181,8 +181,9 @@ func (d *daemon) sendToAgent(req Request) (*Response, error) {
 		return nil, fmt.Errorf("agent write: %v", err)
 	}
 
-	// Read response (agent sends one line of JSON per request)
-	d.agentConn.SetReadDeadline(time.Now().Add(30 * time.Second))
+	// Read response. Use long timeout for operations that may download
+	// images (image.pull can take minutes on slow connections).
+	d.agentConn.SetReadDeadline(time.Now().Add(10 * time.Minute))
 	line, err := d.agentReader.ReadBytes('\n')
 	if err != nil {
 		return nil, fmt.Errorf("agent read: %v", err)
@@ -197,7 +198,8 @@ func (d *daemon) sendToAgent(req Request) (*Response, error) {
 
 func (d *daemon) handleCLIConn(conn net.Conn) {
 	defer conn.Close()
-	conn.SetDeadline(time.Now().Add(30 * time.Second))
+	// Long timeout: image pull + extract can take minutes.
+	conn.SetDeadline(time.Now().Add(10 * time.Minute))
 
 	// Read one request from CLI client
 	scanner := bufio.NewScanner(conn)
@@ -294,14 +296,21 @@ func cmdRun() {
 	defer os.Remove(daemonSock)
 
 	// 3. Start crosvm
+	dataDisk := os.Getenv("AETHERIA_DATA_DISK")
 	args := []string{
 		"run",
 		"--mem", "512",
 		"--cpus", "2",
 		"--block", rootfs,
+	}
+	// Data disk: dedicated sparse ext4 for containers (appears as /dev/vdb).
+	if dataDisk != "" {
+		args = append(args, "--block", dataDisk)
+	}
+	args = append(args,
 		"--serial", "type=stdout,hardware=serial,num=1",
 		"-p", "root=/dev/vda rw console=ttyS0 earlycon=uart8250,mmio,0x3f8 loglevel=4",
-	}
+	)
 	if initrd != "" {
 		args = append(args, "--initrd", initrd)
 	}

@@ -25,13 +25,49 @@ import (
 	"time"
 )
 
-const (
-	// Image tarballs cached on virtiofs (host filesystem, terabytes available).
-	// Container overlayfs upper/work dirs on ext4 rootfs (1.6GB available).
-	// NOT tmpfs — apt install easily fills 243MB tmpfs.
+// Storage paths — set by detectStorageMode() at startup.
+var (
 	containersDir = "/var/aetheria/containers"
 	imagesDir     = "/mnt/host/aetheria-data/images"
+	storageMode   = "rootfs"
 )
+
+// detectStorageMode picks the best storage backend:
+//   disk   → /dev/vdb mounted at /mnt/data (dedicated sparse virtual disk, recommended)
+//   rootfs → /var/aetheria on the system ext4 (simple, limited by rootfs size)
+//   tmpfs  → /tmp/aetheria (fast, volatile, limited by RAM)
+//
+// Image tarballs are always cached on virtiofs (host filesystem, terabytes).
+// Extracted rootfs and container overlayfs upper/work go to the selected backend.
+func detectStorageMode() {
+	// Try to mount dedicated data disk (/dev/vdb → /mnt/data).
+	if _, err := os.Stat("/dev/vdb"); err == nil {
+		os.MkdirAll("/mnt/data", 0755)
+		if err := syscall.Mount("/dev/vdb", "/mnt/data", "ext4", 0, ""); err == nil {
+			storageMode = "disk"
+			containersDir = "/mnt/data/containers"
+			imagesDir = "/mnt/host/aetheria-data/images"
+		} else if _, err := os.Stat("/mnt/data/containers"); err == nil {
+			// Already mounted (e.g., from fstab).
+			storageMode = "disk"
+			containersDir = "/mnt/data/containers"
+			imagesDir = "/mnt/host/aetheria-data/images"
+		} else {
+			log.Printf("[storage] /dev/vdb mount failed: %v, falling back to rootfs", err)
+		}
+	}
+
+	// Fallback: use system ext4 rootfs.
+	if storageMode != "disk" {
+		storageMode = "rootfs"
+		containersDir = "/var/aetheria/containers"
+		imagesDir = "/mnt/host/aetheria-data/images"
+	}
+
+	os.MkdirAll(containersDir, 0755)
+	os.MkdirAll(imagesDir, 0755)
+	log.Printf("[storage] mode=%s containers=%s images=%s", storageMode, containersDir, imagesDir)
+}
 
 // Container tracks a running container's state.
 type Container struct {
@@ -52,8 +88,7 @@ type ContainerManager struct {
 }
 
 func NewContainerManager() *ContainerManager {
-	os.MkdirAll(containersDir, 0755)
-	os.MkdirAll(imagesDir, 0755)
+	detectStorageMode()
 	return &ContainerManager{
 		containers: make(map[string]*Container),
 	}

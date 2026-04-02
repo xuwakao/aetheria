@@ -19,6 +19,11 @@ export AETHERIA_KERNEL="$ROOT/aetheria-kernel/build/linux-6.12.15/arch/arm64/boo
 export AETHERIA_ROOTFS="$ROOT/aetheria-kernel/build/rootfs-arm64.img"
 export AETHERIA_SHARE="/private/tmp/aetheria-share"
 
+# Data disk: dedicated sparse ext4 for container images and overlayfs.
+# Thin provisioning: 64GB virtual size, actual host usage grows on demand.
+AETHERIA_DATA="$ROOT/.data/aetheria-data.img"
+AETHERIA_DATA_SIZE="64G"
+
 CLI="$ROOT/.build/aetheria-cli"
 AGENT="$ROOT/.build/aetheria-agent"
 
@@ -48,6 +53,23 @@ if [ ! -f "$CLI" ]; then
     build
 fi
 
+# ── Data disk (thin provisioned) ──
+ensure_data_disk() {
+    if [ -f "$AETHERIA_DATA" ]; then
+        return
+    fi
+    echo "Creating data disk ($AETHERIA_DATA_SIZE thin provisioned)..."
+    mkdir -p "$(dirname "$AETHERIA_DATA")"
+    # Create sparse file — only uses actual host disk for written blocks.
+    dd if=/dev/zero of="$AETHERIA_DATA" bs=1 count=0 seek=$AETHERIA_DATA_SIZE 2>/dev/null
+    # Format as ext4 inside Docker (mkfs.ext4 not on macOS)
+    docker run --rm -v "$(dirname "$AETHERIA_DATA"):/work" alpine:3.21 \
+        sh -c "apk add --no-cache e2fsprogs >/dev/null 2>&1 && mkfs.ext4 -F -L aetheria-data /work/$(basename "$AETHERIA_DATA")" 2>&1
+    echo "Data disk ready: $AETHERIA_DATA"
+    echo "  Virtual size: $AETHERIA_DATA_SIZE"
+    echo "  Actual usage: $(du -h "$AETHERIA_DATA" | cut -f1)"
+}
+
 # ── Signing ──
 ensure_signed() {
     if ! codesign -v "$AETHERIA_CROSVM" 2>/dev/null; then
@@ -70,6 +92,7 @@ case "${1:-run}" in
         ;;
     run)
         ensure_signed
+        ensure_data_disk
         echo ""
         echo "  ╔══════════════════════════════════════╗"
         echo "  ║     Aetheria — 以太之境              ║"
@@ -82,6 +105,7 @@ case "${1:-run}" in
         echo ""
         # crosvm needs sudo for vmnet (network)
         sudo -v 2>/dev/null || echo "Enter password for VM networking (vmnet):"
+        export AETHERIA_DATA_DISK="$AETHERIA_DATA"
         exec "$CLI" run
         ;;
     create|start|shell|ls|exec|stop|ping|info|rm|pull|images)
