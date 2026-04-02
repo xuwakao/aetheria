@@ -57,10 +57,8 @@ chmod +x /mnt/etc/init.d/aetheria-agent
 mkdir -p /mnt/etc/runlevels/default
 ln -sf /etc/init.d/aetheria-agent /mnt/etc/runlevels/default/aetheria-agent 2>/dev/null || true
 
-# Also add to inittab as a respawn fallback (in case OpenRC doesn't start it)
-if ! grep -q aetheria-agent /mnt/etc/inittab; then
-    echo '::respawn:/usr/bin/aetheria-agent' >> /mnt/etc/inittab
-fi
+# NOTE: Do NOT add to inittab — OpenRC service is sufficient.
+# Having both causes two agent instances that fight over the vsock connection.
 
 # Create directories agent needs
 mkdir -p /mnt/var/aetheria/containers /mnt/var/aetheria/images /mnt/var/log
