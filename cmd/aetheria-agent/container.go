@@ -92,16 +92,17 @@ func (cm *ContainerManager) Create(params ContainerCreateParams) error {
 		return err
 	}
 
+	// Check for duplicates under lock, then release before slow operations.
 	cm.mu.Lock()
-	defer cm.mu.Unlock()
-
 	if _, exists := cm.containers[params.Name]; exists {
+		cm.mu.Unlock()
 		return fmt.Errorf("container %q already exists", params.Name)
 	}
+	cm.mu.Unlock()
 
+	// Prepare rootfs OUTSIDE the lock — this may download images (slow).
 	rootfs := params.Rootfs
 	if rootfs == "" && params.Image != "" {
-		// Auto-prepare rootfs from image.
 		var err error
 		rootfs, err = PrepareContainerRootfs(params.Name, params.Image)
 		if err != nil {
@@ -116,6 +117,13 @@ func (cm *ContainerManager) Create(params ContainerCreateParams) error {
 
 	if _, err := os.Stat(rootfs); os.IsNotExist(err) {
 		return fmt.Errorf("rootfs not found: %s", rootfs)
+	}
+
+	// Re-acquire lock and insert (re-check for race).
+	cm.mu.Lock()
+	defer cm.mu.Unlock()
+	if _, exists := cm.containers[params.Name]; exists {
+		return fmt.Errorf("container %q already exists", params.Name)
 	}
 
 	cm.containers[params.Name] = &Container{
