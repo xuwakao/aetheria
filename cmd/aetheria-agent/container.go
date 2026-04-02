@@ -2,10 +2,11 @@
 
 // container.go — Linux container lifecycle using namespaces.
 //
-// Creates isolated containers using unshare + pivot_root + cgroups v2.
-// Each container has its own PID, mount, UTS, IPC, and network namespace.
+// Creates isolated containers using unshare + pivot_root (chroot fallback).
+// Each container has its own PID, mount, UTS, and IPC namespace.
 // The container rootfs is an extracted distro image (Ubuntu, Alpine, etc.)
 // located at /var/aetheria/containers/<name>/rootfs/.
+// Network namespace and cgroups v2 are planned for Phase 3.
 
 package main
 
@@ -101,6 +102,11 @@ func (cm *ContainerManager) Create(params ContainerCreateParams) error {
 	rootfs := params.Rootfs
 	if rootfs == "" {
 		rootfs = filepath.Join(containersDir, params.Name, "rootfs")
+	}
+	// Ensure rootfs is under containersDir or an absolute path provided
+	// explicitly (custom rootfs from the host CLI, which is trusted).
+	if !filepath.IsAbs(rootfs) {
+		return fmt.Errorf("rootfs must be an absolute path: %s", rootfs)
 	}
 
 	if _, err := os.Stat(rootfs); os.IsNotExist(err) {
