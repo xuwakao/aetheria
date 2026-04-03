@@ -1,10 +1,12 @@
 # Aetheria 以太之境
 
-A lightweight Linux container runtime for macOS, powered by [crosvm](https://github.com/nickkuk/nicrosvm) + Apple Hypervisor.framework.
+[中文文档](README_CN.md)
+
+A cross-platform lightweight Linux container runtime, powered by [crosvm](https://github.com/xuwakao/crosvm) VMM. Currently supports macOS (Apple Hypervisor.framework), with Linux (KVM) and Windows (WHPX) planned.
 
 ## Features
 
-- **ARM64 Linux VM** on Apple Silicon via crosvm/HVF — boots in seconds
+- **ARM64 Linux VM** — crosvm with HVF (macOS), KVM (Linux), WHPX (Windows) planned — boots in seconds
 - **Container isolation** — PID/mount/UTS/IPC/network namespaces + pivot_root
 - **Bridge networking** — per-container veth + nftables NAT (10.42.0.0/24)
 - **Port forwarding** — `-p 8080:80` tunnels traffic via vsock
@@ -43,7 +45,7 @@ A lightweight Linux container runtime for macOS, powered by [crosvm](https://git
 ## Architecture
 
 ```
-macOS Host                          Linux VM (Alpine, crosvm/HVF)
+Host (macOS/Linux/Windows)          Linux VM (Alpine, crosvm)
 ┌─────────────────────┐            ┌──────────────────────────────┐
 │ aetheria CLI        │            │ aetheria-agent (PID 1)       │
 │   ↕ Unix socket     │            │   ↕ namespace isolation      │
@@ -60,7 +62,7 @@ macOS Host                          Linux VM (Alpine, crosvm/HVF)
 
 ```
 aetheria/
-├── cmd/aetheria/          # Host CLI + daemon (macOS)
+├── cmd/aetheria/          # Host CLI + daemon
 ├── cmd/aetheria-agent/    # Guest agent (Linux ARM64)
 │   ├── container.go       # Container lifecycle + persistence
 │   ├── network.go         # Bridge networking + nftables
