@@ -217,6 +217,9 @@ func handleRequest(req Request) Response {
 	if strings.HasPrefix(req.Method, "image.") {
 		return handleImageRPC(req)
 	}
+	if strings.HasPrefix(req.Method, "portforward.") {
+		return handlePortForwardRPC(req)
+	}
 
 	switch req.Method {
 	case "ping":

@@ -3,10 +3,9 @@
 // container.go — Linux container lifecycle using namespaces.
 //
 // Creates isolated containers using unshare + pivot_root (chroot fallback).
-// Each container has its own PID, mount, UTS, and IPC namespace.
-// The container rootfs is an extracted distro image (Ubuntu, Alpine, etc.)
-// located at /var/aetheria/containers/<name>/rootfs/.
-// Network namespace and cgroups v2 are planned for Phase 3.
+// Each container has its own PID, mount, UTS, IPC, and (optionally) network
+// namespace. Cgroups v2 resource limits (CPU, memory, PIDs) are applied
+// per container. Port forwarding tunnels traffic via vsock.
 
 package main
 
@@ -71,14 +70,23 @@ func detectStorageMode() {
 
 // Container tracks a running container's state.
 type Container struct {
-	Name    string      `json:"name"`
-	Rootfs  string      `json:"rootfs"`
-	Pid     int         `json:"pid"`
-	Status  string      `json:"status"` // "created", "running", "stopped"
-	Image   string      `json:"image"`
-	Network NetworkMode `json:"network"`
-	IP      string      `json:"ip,omitempty"` // bridge mode: assigned IP
-	cmd     *exec.Cmd
+	Name      string         `json:"name"`
+	Rootfs    string         `json:"rootfs"`
+	Pid       int            `json:"pid"`
+	Status    string         `json:"status"` // "created", "running", "stopped"
+	Image     string         `json:"image"`
+	Network   NetworkMode    `json:"network"`
+	IP        string         `json:"ip,omitempty"`    // bridge mode: assigned IP
+	Ports     []PortMapping  `json:"ports,omitempty"` // port forwards
+	Resources ResourceLimits `json:"resources,omitempty"`
+	cmd       *exec.Cmd
+}
+
+// PortMapping describes a host:container port forward.
+type PortMapping struct {
+	HostPort      uint16 `json:"host_port"`
+	ContainerPort uint16 `json:"container_port"`
+	Protocol      string `json:"protocol,omitempty"` // "tcp" (default), "udp"
 }
 
 // ContainerManager manages container lifecycle.
@@ -89,6 +97,7 @@ type ContainerManager struct {
 
 func NewContainerManager() *ContainerManager {
 	detectStorageMode()
+	initCgroupHierarchy()
 	return &ContainerManager{
 		containers: make(map[string]*Container),
 	}
@@ -109,10 +118,12 @@ const (
 )
 
 type ContainerCreateParams struct {
-	Name    string      `json:"name"`
-	Rootfs  string      `json:"rootfs"`  // path to rootfs directory
-	Image   string      `json:"image"`   // image name (for display)
-	Network NetworkMode `json:"network"` // "host", "bridge", "none" (default: "bridge")
+	Name      string         `json:"name"`
+	Rootfs    string         `json:"rootfs"`    // path to rootfs directory
+	Image     string         `json:"image"`     // image name (for display)
+	Network   NetworkMode    `json:"network"`   // "host", "bridge", "none" (default: "bridge")
+	Ports     []PortMapping  `json:"ports,omitempty"`
+	Resources ResourceLimits `json:"resources,omitempty"`
 }
 
 type ContainerExecParams struct {
@@ -185,11 +196,13 @@ func (cm *ContainerManager) Create(params ContainerCreateParams) error {
 	}
 
 	cm.containers[params.Name] = &Container{
-		Name:    params.Name,
-		Rootfs:  rootfs,
-		Status:  "created",
-		Image:   params.Image,
-		Network: netMode,
+		Name:      params.Name,
+		Rootfs:    rootfs,
+		Status:    "created",
+		Image:     params.Image,
+		Network:   netMode,
+		Ports:     params.Ports,
+		Resources: params.Resources,
 	}
 
 	log.Printf("[container] created %q (rootfs=%s)", params.Name, rootfs)
@@ -228,6 +241,13 @@ func (cm *ContainerManager) Start(name string) error {
 	c.Status = "running"
 	c.cmd = cmd
 
+	// Apply cgroup resource limits (after process starts, before it does real work).
+	if !c.Resources.IsEmpty() {
+		if err := setupCgroup(name, c.Pid, c.Resources); err != nil {
+			log.Printf("[container] cgroup setup failed: %v (non-fatal)", err)
+		}
+	}
+
 	// For bridge mode: set up veth pair + bridge after the container starts
 	// (need the PID for moving veth into the container's net namespace).
 	if c.Network == NetBridge {
@@ -250,6 +270,10 @@ func (cm *ContainerManager) Start(name string) error {
 		// Clean up bridge networking if applicable.
 		if c.Network == NetBridge {
 			teardownBridgeNetwork(name)
+		}
+		// Clean up cgroup.
+		if !c.Resources.IsEmpty() {
+			cleanupCgroup(name)
 		}
 		cm.mu.Lock()
 		c.Status = "stopped"
@@ -390,11 +414,15 @@ func (cm *ContainerManager) List() []Container {
 	list := make([]Container, 0, len(cm.containers))
 	for _, c := range cm.containers {
 		list = append(list, Container{
-			Name:   c.Name,
-			Rootfs: c.Rootfs,
-			Pid:    c.Pid,
-			Status: c.Status,
-			Image:  c.Image,
+			Name:      c.Name,
+			Rootfs:    c.Rootfs,
+			Pid:       c.Pid,
+			Status:    c.Status,
+			Image:     c.Image,
+			Network:   c.Network,
+			IP:        c.IP,
+			Ports:     c.Ports,
+			Resources: c.Resources,
 		})
 	}
 	return list

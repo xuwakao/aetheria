@@ -109,6 +109,7 @@ case "${1:-run}" in
         exec "$CLI" run
         ;;
     create|start|shell|ls|exec|stop|ping|info|rm|pull|images)
+        # Pass all arguments through to CLI (supports -p, --memory, etc.)
         exec "$CLI" "$@"
         ;;
     *)
