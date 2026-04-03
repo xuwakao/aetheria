@@ -200,6 +200,14 @@ func (cm *ContainerManager) loadConfigs() {
 			continue
 		}
 
+		// Use directory name as authoritative — handles edge case where
+		// config.json Name doesn't match the directory.
+		dirName := entry.Name()
+		if cfg.Name != dirName {
+			log.Printf("[persist] config name %q doesn't match directory %q, using directory name", cfg.Name, dirName)
+			cfg.Name = dirName
+		}
+
 		// Reconstruct container from config.
 		rootfs := filepath.Join(containersDir, cfg.Name, "rootfs")
 		if _, err := os.Stat(rootfs); os.IsNotExist(err) {
@@ -322,6 +330,9 @@ func (cm *ContainerManager) Create(params ContainerCreateParams) error {
 	if restart == "" {
 		restart = "no"
 	}
+	if restart != "no" && restart != "always" {
+		return fmt.Errorf("invalid restart policy %q (must be \"no\" or \"always\")", restart)
+	}
 
 	c := &Container{
 		Name:      params.Name,
@@ -346,6 +357,33 @@ func (cm *ContainerManager) Start(name string) error {
 	if !ok {
 		cm.mu.Unlock()
 		return fmt.Errorf("container %q not found", name)
+	}
+	if c.Status == "running" {
+		cm.mu.Unlock()
+		return fmt.Errorf("container %q already running", name)
+	}
+	image := c.Image
+	rootfs := c.Rootfs
+	cm.mu.Unlock()
+
+	// Re-mount overlayfs if needed (lost after VM restart).
+	// PrepareContainerRootfs is idempotent: skips if rootfs/bin already exists.
+	// Done outside lock — extraction can be slow.
+	if image != "" {
+		if _, err := os.Stat(filepath.Join(rootfs, "bin")); os.IsNotExist(err) {
+			log.Printf("[container] rootfs empty for %q, re-mounting overlayfs", name)
+			if _, err := PrepareContainerRootfs(name, image); err != nil {
+				return fmt.Errorf("re-mount rootfs for %q: %w", name, err)
+			}
+		}
+	}
+
+	cm.mu.Lock()
+	// Re-check state after re-acquiring lock — container may have been
+	// removed or started by a concurrent operation.
+	if cm.containers[name] != c {
+		cm.mu.Unlock()
+		return fmt.Errorf("container %q was modified during start", name)
 	}
 	if c.Status == "running" {
 		cm.mu.Unlock()

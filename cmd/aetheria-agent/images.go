@@ -225,9 +225,12 @@ func PrepareContainerRootfs(containerName, imageName string) (string, error) {
 		return merged, nil
 	}
 
-	for _, d := range []string{merged, upper, work} {
-		os.MkdirAll(d, 0755)
-	}
+	os.MkdirAll(merged, 0755)
+	os.MkdirAll(upper, 0755)
+	// Work directory must be empty for overlayfs mount. Clear stale state
+	// from previous mounts (e.g., after VM restart).
+	os.RemoveAll(work)
+	os.MkdirAll(work, 0755)
 
 	// Try overlayfs mount (requires CONFIG_OVERLAY_FS=y, confirmed in kernel).
 	opts := fmt.Sprintf("lowerdir=%s,upperdir=%s,workdir=%s", baseRootfs, upper, work)
