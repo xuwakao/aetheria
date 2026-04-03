@@ -2,7 +2,7 @@
 
 [English](README.md)
 
-跨平台轻量级 Linux 容器运行时，基于 [crosvm](https://github.com/xuwakao/crosvm) VMM。目前支持 macOS（Apple Hypervisor.framework），Linux（KVM）和 Windows（WHPX）支持已规划。
+跨平台轻量级 Linux 容器运行时，基于 [crosvm](https://github.com/xuwakao/crosvm)（fork 自 [Google crosvm](https://chromium.googlesource.com/crosvm/crosvm)）VMM。目前支持 macOS（Apple Hypervisor.framework），Linux（KVM）和 Windows（WHPX）支持已规划。
 
 ## 功能特性
 
@@ -20,9 +20,14 @@
 ## 快速开始
 
 ```bash
-# 前置条件：Docker（用于构建 rootfs）、Go 1.21+
+# 前置条件：
+#   - Go 1.21+
+#   - Rust 工具链（编译 crosvm）
+#   - Docker（构建 rootfs）
+#   - 预构建：crosvm 二进制、Linux 内核镜像、rootfs 镜像
+#   完整构建说明见 docs/ 目录。
 
-# 首次运行 — 自动编译 agent + CLI
+# 启动 VM 守护进程
 ./run.sh
 
 # 在另一个终端中：
@@ -71,7 +76,7 @@ aetheria/
 │   ├── images.go          # 发行版镜像管理 + overlayfs
 │   ├── shell.go           # 交互式 Shell RPC
 │   └── pty.go             # PTY 分配
-├── aetheria-crosvm/       # crosvm fork + HVF 后端（子模块）
+├── aetheria-crosvm/       # crosvm fork — 新增 macOS HVF 后端（子模块）
 ├── aetheria-kernel/       # 自定义 Linux 6.12.15 内核（子模块）
 ├── run.sh                 # 一键启动脚本
 └── docs/                  # 设计文档 + 状态报告

@@ -2,7 +2,7 @@
 
 [中文文档](README_CN.md)
 
-A cross-platform lightweight Linux container runtime, powered by [crosvm](https://github.com/xuwakao/crosvm) VMM. Currently supports macOS (Apple Hypervisor.framework), with Linux (KVM) and Windows (WHPX) planned.
+A cross-platform lightweight Linux container runtime, powered by [crosvm](https://github.com/xuwakao/crosvm) (forked from [Google crosvm](https://chromium.googlesource.com/crosvm/crosvm)) VMM. Currently supports macOS (Apple Hypervisor.framework), with Linux (KVM) and Windows (WHPX) planned.
 
 ## Features
 
@@ -20,9 +20,14 @@ A cross-platform lightweight Linux container runtime, powered by [crosvm](https:
 ## Quick Start
 
 ```bash
-# Prerequisites: Docker (for rootfs build), Go 1.21+
+# Prerequisites:
+#   - Go 1.21+
+#   - Rust toolchain (for crosvm)
+#   - Docker (for rootfs build)
+#   - Pre-built: crosvm binary, Linux kernel image, rootfs image
+#   See docs/ for full build instructions.
 
-# First run — builds agent + CLI automatically
+# Start the VM daemon
 ./run.sh
 
 # In another terminal:
@@ -71,7 +76,7 @@ aetheria/
 │   ├── images.go          # Distro image management + overlayfs
 │   ├── shell.go           # Interactive shell RPC
 │   └── pty.go             # PTY allocation
-├── aetheria-crosvm/       # crosvm fork with HVF backend (submodule)
+├── aetheria-crosvm/       # crosvm fork — added HVF backend for macOS (submodule)
 ├── aetheria-kernel/       # Custom Linux 6.12.15 kernel (submodule)
 ├── run.sh                 # One-click launcher
 └── docs/                  # Design docs + status
