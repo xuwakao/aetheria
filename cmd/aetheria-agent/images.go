@@ -55,6 +55,10 @@ var imageRegistry = map[string]ImageInfo{
 	},
 }
 
+// ociImagePaths maps OCI image short names to their extracted rootfs paths.
+// Populated by PullImage when pulling OCI images.
+var ociImagePaths = map[string]string{}
+
 // ── RPC types ──
 
 type ImagePullParams struct {
@@ -83,23 +87,39 @@ func imageCachePath(name string) string {
 }
 
 // imageExtractPath returns the path for the extracted base rootfs.
-// Uses the same storage backend as containers (ext4 disk or rootfs).
-// NOT virtiofs — macOS APFS lacks Linux symlink semantics.
+// For hardcoded distros, uses the storage backend.
+// For OCI images, returns the cached OCI rootfs path.
 func imageExtractPath(name string) string {
+	// Check OCI image cache first.
+	ref := ParseOCIRef(name)
+	if path, ok := ociImagePaths[ref.ShortName()]; ok {
+		return path
+	}
 	// Co-locate with containers on the selected storage backend.
+	// NOT virtiofs — macOS APFS lacks Linux symlink semantics.
 	base := filepath.Dir(containersDir) // e.g., /mnt/data, /var/aetheria, /tmp/aetheria
 	return filepath.Join(base, "images", name, "rootfs")
 }
 
 // PullImage downloads a distro rootfs tarball if not cached.
+// If the image name is not in the hardcoded registry, attempts OCI pull
+// from Docker Hub or the specified registry.
 func PullImage(name string) error {
 	info, ok := imageRegistry[name]
 	if !ok {
-		avail := make([]string, 0, len(imageRegistry))
-		for k := range imageRegistry {
-			avail = append(avail, k)
+		// Not a hardcoded distro — try OCI pull.
+		rootfs, err := pullOCIImage(name)
+		if err != nil {
+			avail := make([]string, 0, len(imageRegistry))
+			for k := range imageRegistry {
+				avail = append(avail, k)
+			}
+			return fmt.Errorf("pull %q: %v (builtin images: %s)", name, err, strings.Join(avail, ", "))
 		}
-		return fmt.Errorf("unknown image %q (available: %s)", name, strings.Join(avail, ", "))
+		// Register the OCI image so PrepareContainerRootfs can find it.
+		ref := ParseOCIRef(name)
+		ociImagePaths[ref.ShortName()] = rootfs
+		return nil
 	}
 
 	cachePath := imageCachePath(name)

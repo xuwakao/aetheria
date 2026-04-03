@@ -80,7 +80,16 @@ type Container struct {
 	Ports     []PortMapping  `json:"ports,omitempty"` // port forwards
 	Resources ResourceLimits `json:"resources,omitempty"`
 	Restart   string         `json:"restart,omitempty"` // "no" (default), "always"
+	Env       []string       `json:"env,omitempty"`     // ["KEY=VALUE", ...]
+	Volumes   []VolumeMount  `json:"volumes,omitempty"`
 	cmd       *exec.Cmd
+}
+
+// VolumeMount describes a bind mount from host (virtiofs) into a container.
+type VolumeMount struct {
+	HostPath      string `json:"host_path"`
+	ContainerPath string `json:"container_path"`
+	ReadOnly      bool   `json:"read_only,omitempty"`
 }
 
 // PortMapping describes a host:container port forward.
@@ -105,6 +114,8 @@ type ContainerConfig struct {
 	Ports     []PortMapping  `json:"ports,omitempty"`
 	Resources ResourceLimits `json:"resources,omitempty"`
 	Restart   string         `json:"restart,omitempty"` // "no" (default), "always"
+	Env       []string       `json:"env,omitempty"`
+	Volumes   []VolumeMount  `json:"volumes,omitempty"`
 }
 
 func NewContainerManager() *ContainerManager {
@@ -148,6 +159,8 @@ func (cm *ContainerManager) saveConfig(c *Container) {
 		Ports:     c.Ports,
 		Resources: c.Resources,
 		Restart:   c.Restart,
+		Env:       c.Env,
+		Volumes:   c.Volumes,
 	}
 
 	dir := filepath.Join(containersDir, c.Name)
@@ -224,6 +237,8 @@ func (cm *ContainerManager) loadConfigs() {
 			Ports:     cfg.Ports,
 			Resources: cfg.Resources,
 			Restart:   cfg.Restart,
+			Env:       cfg.Env,
+			Volumes:   cfg.Volumes,
 		}
 		log.Printf("[persist] restored container %s (image=%s, restart=%s)", cfg.Name, cfg.Image, cfg.Restart)
 	}
@@ -255,6 +270,8 @@ type ContainerCreateParams struct {
 	Ports     []PortMapping  `json:"ports,omitempty"`
 	Resources ResourceLimits `json:"resources,omitempty"`
 	Restart   string         `json:"restart,omitempty"` // "no" (default), "always"
+	Env       []string       `json:"env,omitempty"`
+	Volumes   []VolumeMount  `json:"volumes,omitempty"`
 }
 
 type ContainerExecParams struct {
@@ -343,6 +360,8 @@ func (cm *ContainerManager) Create(params ContainerCreateParams) error {
 		Ports:     params.Ports,
 		Resources: params.Resources,
 		Restart:   restart,
+		Env:       params.Env,
+		Volumes:   params.Volumes,
 	}
 	cm.containers[params.Name] = c
 	cm.saveConfig(c)
@@ -398,8 +417,29 @@ func (cm *ContainerManager) Start(name string) error {
 	// Create the container init process with appropriate namespace flags.
 	cmd := reexecContainer(c.Rootfs, name, c.Network)
 	cmd.Stdin = nil
-	cmd.Stdout = os.Stdout
-	cmd.Stderr = os.Stderr
+
+	// Redirect container stdout/stderr to log file.
+	logPath := filepath.Join(containersDir, name, "container.log")
+	logFile, err := os.OpenFile(logPath, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0644)
+	if err != nil {
+		log.Printf("[container] failed to create log file: %v, using stdout", err)
+		cmd.Stdout = os.Stdout
+		cmd.Stderr = os.Stderr
+	} else {
+		cmd.Stdout = logFile
+		cmd.Stderr = logFile
+	}
+
+	// Pass env vars and volume mounts to container init via environment.
+	// Container init reads these and applies them inside the namespace.
+	cmd.Env = append(os.Environ(), c.Env...)
+	for i, v := range c.Volumes {
+		flag := "ro"
+		if !v.ReadOnly {
+			flag = "rw"
+		}
+		cmd.Env = append(cmd.Env, fmt.Sprintf("__AETHERIA_VOL_%d=%s:%s:%s", i, v.HostPath, v.ContainerPath, flag))
+	}
 
 	if err := cmd.Start(); err != nil {
 		cm.mu.Unlock()
@@ -436,6 +476,9 @@ func (cm *ContainerManager) Start(name string) error {
 	// Wait for container to exit in background.
 	go func() {
 		cmd.Wait()
+		if logFile != nil {
+			logFile.Close()
+		}
 		// Clean up bridge networking if applicable.
 		if c.Network == NetBridge {
 			teardownBridgeNetwork(name)
@@ -593,9 +636,37 @@ func (cm *ContainerManager) List() []Container {
 			Ports:     c.Ports,
 			Resources: c.Resources,
 			Restart:   c.Restart,
+			Env:       c.Env,
+			Volumes:   c.Volumes,
 		})
 	}
 	return list
+}
+
+func (cm *ContainerManager) Logs(name string, lines int) (string, error) {
+	cm.mu.Lock()
+	_, ok := cm.containers[name]
+	cm.mu.Unlock()
+	if !ok {
+		return "", fmt.Errorf("container %q not found", name)
+	}
+
+	logPath := filepath.Join(containersDir, name, "container.log")
+	data, err := os.ReadFile(logPath)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return "", nil // no logs yet
+		}
+		return "", fmt.Errorf("read logs: %w", err)
+	}
+
+	// Return last N lines.
+	allLines := strings.Split(string(data), "\n")
+	start := len(allLines) - lines
+	if start < 0 {
+		start = 0
+	}
+	return strings.Join(allLines[start:], "\n"), nil
 }
 
 // ── Container init (re-exec pattern) ──
@@ -655,10 +726,35 @@ func containerInit() {
 		os.Chdir("/")
 	}
 
+	// Mount volumes passed via __AETHERIA_VOL_N env vars.
+	for _, env := range os.Environ() {
+		if !strings.HasPrefix(env, "__AETHERIA_VOL_") {
+			continue
+		}
+		// Format: __AETHERIA_VOL_N=hostPath:containerPath:ro|rw
+		val := env[strings.Index(env, "=")+1:]
+		parts := strings.SplitN(val, ":", 3)
+		if len(parts) < 2 {
+			continue
+		}
+		hostPath, containerPath := parts[0], parts[1]
+		flags := uintptr(syscall.MS_BIND | syscall.MS_REC)
+		if len(parts) == 3 && parts[2] == "ro" {
+			flags |= syscall.MS_RDONLY
+		}
+		os.MkdirAll(containerPath, 0755)
+		if err := syscall.Mount(hostPath, containerPath, "", flags, ""); err != nil {
+			log.Printf("[container-init] mount volume %s → %s: %v", hostPath, containerPath, err)
+		} else {
+			// For read-only, need a remount with MS_RDONLY (bind mount ignores it on first call).
+			if len(parts) == 3 && parts[2] == "ro" {
+				syscall.Mount("", containerPath, "", syscall.MS_BIND|syscall.MS_REMOUNT|syscall.MS_RDONLY, "")
+			}
+			log.Printf("[container-init] mounted volume %s → %s", hostPath, containerPath)
+		}
+	}
+
 	// Container init: stay alive so nsenter can execute commands.
-	// Don't exec a shell (it exits without tty). Instead, block in Go
-	// using select{} (infinite wait). The process stays as PID 1 in the
-	// container's PID namespace. Users interact via nsenter.
 	log.Printf("[container-init] container ready, waiting for commands")
 
 	// Handle SIGTERM for graceful shutdown.
@@ -785,6 +881,23 @@ func (cm *ContainerManager) HandleRPC(req Request) Response {
 
 	case "container.list":
 		return Response{Result: cm.List(), ID: req.ID}
+
+	case "container.logs":
+		var params struct {
+			Name  string `json:"name"`
+			Lines int    `json:"lines,omitempty"`
+		}
+		if err := json.Unmarshal(req.Params, &params); err != nil {
+			return Response{Error: "invalid params: " + err.Error(), ID: req.ID}
+		}
+		if params.Lines <= 0 {
+			params.Lines = 100
+		}
+		logs, err := cm.Logs(params.Name, params.Lines)
+		if err != nil {
+			return Response{Error: err.Error(), ID: req.ID}
+		}
+		return Response{Result: logs, ID: req.ID}
 
 	default:
 		return Response{Error: fmt.Sprintf("unknown container method: %s", req.Method), ID: req.ID}

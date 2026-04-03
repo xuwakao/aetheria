@@ -87,10 +87,19 @@ func main() {
 			os.Exit(1)
 		}
 		image := os.Args[2]
+		// Derive container name from image: "nginx:1.25" → "nginx", "ghcr.io/owner/repo" → "repo"
 		name := image
+		if i := strings.LastIndex(name, "/"); i >= 0 {
+			name = name[i+1:]
+		}
+		if i := strings.Index(name, ":"); i >= 0 {
+			name = name[:i]
+		}
 		network := "bridge" // default
 		restart := "no"
 		var ports []portMapping
+		var envVars []string
+		var volumes []map[string]interface{}
 		var memoryMax int64
 		var cpuMax float64
 		var pidsMax int64
@@ -123,13 +132,36 @@ func main() {
 				fmt.Sscanf(v, "%d", &pidsMax)
 			case strings.HasPrefix(os.Args[i], "--restart="):
 				restart = strings.TrimPrefix(os.Args[i], "--restart=")
+			case strings.HasPrefix(os.Args[i], "-e"):
+				var envStr string
+				if os.Args[i] == "-e" && i+1 < len(os.Args) {
+					i++
+					envStr = os.Args[i]
+				} else {
+					envStr = strings.TrimPrefix(os.Args[i], "-e")
+				}
+				envVars = append(envVars, envStr)
+			case strings.HasPrefix(os.Args[i], "-v"):
+				var volStr string
+				if os.Args[i] == "-v" && i+1 < len(os.Args) {
+					i++
+					volStr = os.Args[i]
+				} else {
+					volStr = strings.TrimPrefix(os.Args[i], "-v")
+				}
+				vm, err := parseVolumeMount(volStr)
+				if err != nil {
+					fmt.Fprintf(os.Stderr, "invalid volume %q: %v\n", volStr, err)
+					os.Exit(1)
+				}
+				volumes = append(volumes, vm)
 			default:
 				if name == image {
 					name = os.Args[i]
 				}
 			}
 		}
-		cmdContainerCreate(image, name, network, ports, memoryMax, cpuMax, pidsMax, restart)
+		cmdContainerCreate(image, name, network, ports, memoryMax, cpuMax, pidsMax, restart, envVars, volumes)
 	case "start":
 		if len(os.Args) < 3 {
 			fmt.Fprintln(os.Stderr, "usage: aetheria start <name>")
@@ -144,6 +176,20 @@ func main() {
 		cmdShell(os.Args[2])
 	case "ls":
 		cmdContainerList()
+	case "logs":
+		if len(os.Args) < 3 {
+			fmt.Fprintln(os.Stderr, "usage: aetheria logs <name> [-n lines]")
+			os.Exit(1)
+		}
+		logName := os.Args[2]
+		logLines := 100
+		for i := 3; i < len(os.Args); i++ {
+			if os.Args[i] == "-n" && i+1 < len(os.Args) {
+				i++
+				fmt.Sscanf(os.Args[i], "%d", &logLines)
+			}
+		}
+		cmdContainerLogs(logName, logLines)
 	case "rm":
 		if len(os.Args) < 3 {
 			fmt.Fprintln(os.Stderr, "usage: aetheria rm <name>")
@@ -177,10 +223,13 @@ Usage:
     [--cpus=1.0]                 CPU limit (e.g., 0.5, 2.0)
     [--pids=1024]                Max processes
     [--restart=always]           Auto-restart on VM boot
+    [-e KEY=VALUE]               Environment variable (repeatable)
+    [-v host:container[:ro]]     Volume mount (repeatable)
   aetheria start <name>        Start a container
   aetheria shell <name>        Open a shell in a running container
   aetheria exec <command>      Execute a command in the VM
   aetheria ls                  List containers
+  aetheria logs <name> [-n N]  Show container logs (default: last 100 lines)
   aetheria rm <name>           Stop and remove a container
   aetheria pull <distro>       Download a distro rootfs image
   aetheria images              List available/cached images
@@ -458,6 +507,9 @@ func cmdRun() {
 			}
 			fmt.Printf("Agent ready: %s\n", string(resp.Result))
 			fmt.Println("VM running. Use 'aetheria exec <cmd>' in another terminal.")
+
+			// Restore port forwards for running containers (after VM restart).
+			go d.restorePortForwards()
 		}
 	}()
 
@@ -672,7 +724,23 @@ func parseMemorySize(s string) int64 {
 	return n * multiplier
 }
 
-func cmdContainerCreate(image, name, network string, ports []portMapping, memoryMax int64, cpuMax float64, pidsMax int64, restart string) {
+func parseVolumeMount(s string) (map[string]interface{}, error) {
+	// Format: host:container[:ro]
+	parts := strings.SplitN(s, ":", 3)
+	if len(parts) < 2 {
+		return nil, fmt.Errorf("expected host:container[:ro] format")
+	}
+	vm := map[string]interface{}{
+		"host_path":      parts[0],
+		"container_path": parts[1],
+	}
+	if len(parts) == 3 && parts[2] == "ro" {
+		vm["read_only"] = true
+	}
+	return vm, nil
+}
+
+func cmdContainerCreate(image, name, network string, ports []portMapping, memoryMax int64, cpuMax float64, pidsMax int64, restart string, envVars []string, volumes []map[string]interface{}) {
 	// First pull the image, then create the container.
 	fmt.Printf("Pulling %s...\n", image)
 	resp, err := sendToDaemon(Request{
@@ -696,6 +764,12 @@ func cmdContainerCreate(image, name, network string, ports []portMapping, memory
 	}
 	if len(ports) > 0 {
 		createParams["ports"] = ports
+	}
+	if len(envVars) > 0 {
+		createParams["env"] = envVars
+	}
+	if len(volumes) > 0 {
+		createParams["volumes"] = volumes
 	}
 	if memoryMax > 0 || cpuMax > 0 || pidsMax > 0 {
 		createParams["resources"] = map[string]interface{}{
@@ -1095,6 +1169,64 @@ func readLineRaw(conn net.Conn) (string, error) {
 			return "", fmt.Errorf("header too long")
 		}
 	}
+}
+
+// restorePortForwards queries running containers and restores port forward
+// TCP listeners for any containers that have port mappings configured.
+func (d *daemon) restorePortForwards() {
+	resp, err := d.sendToAgent(Request{Method: "container.list"})
+	if err != nil {
+		return
+	}
+
+	var containers []map[string]interface{}
+	if json.Unmarshal(resp.Result, &containers) != nil {
+		return
+	}
+
+	for _, c := range containers {
+		status, _ := c["status"].(string)
+		if status != "running" {
+			continue
+		}
+		ps, ok := c["ports"].([]interface{})
+		if !ok || len(ps) == 0 {
+			continue
+		}
+		var ports []portMapping
+		for _, p := range ps {
+			if pm, ok := p.(map[string]interface{}); ok {
+				hp, _ := pm["host_port"].(float64)
+				cp, _ := pm["container_port"].(float64)
+				if hp > 0 && cp > 0 {
+					ports = append(ports, portMapping{HostPort: uint16(hp), ContainerPort: uint16(cp)})
+				}
+			}
+		}
+		if len(ports) > 0 {
+			cname, _ := c["name"].(string)
+			fmt.Printf("[portforward] restoring port forwards for %s\n", cname)
+			d.startPortForwards(ports)
+		}
+	}
+}
+
+func cmdContainerLogs(name string, lines int) {
+	resp, err := sendToDaemon(Request{
+		Method: "container.logs",
+		Params: map[string]interface{}{"name": name, "lines": lines},
+	})
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "%v\n", err)
+		os.Exit(1)
+	}
+	if resp.Error != "" {
+		fmt.Fprintf(os.Stderr, "error: %s\n", resp.Error)
+		os.Exit(1)
+	}
+	var logs string
+	json.Unmarshal(resp.Result, &logs)
+	fmt.Print(logs)
 }
 
 func cmdRemoveContainer(name string) {
