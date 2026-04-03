@@ -83,12 +83,13 @@ func main() {
 		cmdStop()
 	case "create":
 		if len(os.Args) < 3 {
-			fmt.Fprintln(os.Stderr, "usage: aetheria create <distro> [name] [--net=host|bridge|none] [-p host:container] [--memory=512m] [--cpus=1.0] [--pids=1024]")
+			fmt.Fprintln(os.Stderr, "usage: aetheria create <distro> [name] [--net=host|bridge|none] [-p host:container] [--memory=512m] [--cpus=1.0] [--pids=1024] [--restart=always]")
 			os.Exit(1)
 		}
 		image := os.Args[2]
 		name := image
 		network := "bridge" // default
+		restart := "no"
 		var ports []portMapping
 		var memoryMax int64
 		var cpuMax float64
@@ -120,13 +121,15 @@ func main() {
 			case strings.HasPrefix(os.Args[i], "--pids="):
 				v := strings.TrimPrefix(os.Args[i], "--pids=")
 				fmt.Sscanf(v, "%d", &pidsMax)
+			case strings.HasPrefix(os.Args[i], "--restart="):
+				restart = strings.TrimPrefix(os.Args[i], "--restart=")
 			default:
 				if name == image {
 					name = os.Args[i]
 				}
 			}
 		}
-		cmdContainerCreate(image, name, network, ports, memoryMax, cpuMax, pidsMax)
+		cmdContainerCreate(image, name, network, ports, memoryMax, cpuMax, pidsMax, restart)
 	case "start":
 		if len(os.Args) < 3 {
 			fmt.Fprintln(os.Stderr, "usage: aetheria start <name>")
@@ -173,6 +176,7 @@ Usage:
     [--memory=512m]              Memory limit (e.g., 256m, 1g)
     [--cpus=1.0]                 CPU limit (e.g., 0.5, 2.0)
     [--pids=1024]                Max processes
+    [--restart=always]           Auto-restart on VM boot
   aetheria start <name>        Start a container
   aetheria shell <name>        Open a shell in a running container
   aetheria exec <command>      Execute a command in the VM
@@ -668,7 +672,7 @@ func parseMemorySize(s string) int64 {
 	return n * multiplier
 }
 
-func cmdContainerCreate(image, name, network string, ports []portMapping, memoryMax int64, cpuMax float64, pidsMax int64) {
+func cmdContainerCreate(image, name, network string, ports []portMapping, memoryMax int64, cpuMax float64, pidsMax int64, restart string) {
 	// First pull the image, then create the container.
 	fmt.Printf("Pulling %s...\n", image)
 	resp, err := sendToDaemon(Request{
@@ -688,6 +692,7 @@ func cmdContainerCreate(image, name, network string, ports []portMapping, memory
 		"name":    name,
 		"image":   image,
 		"network": network,
+		"restart": restart,
 	}
 	if len(ports) > 0 {
 		createParams["ports"] = ports

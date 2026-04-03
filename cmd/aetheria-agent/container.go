@@ -79,6 +79,7 @@ type Container struct {
 	IP        string         `json:"ip,omitempty"`    // bridge mode: assigned IP
 	Ports     []PortMapping  `json:"ports,omitempty"` // port forwards
 	Resources ResourceLimits `json:"resources,omitempty"`
+	Restart   string         `json:"restart,omitempty"` // "no" (default), "always"
 	cmd       *exec.Cmd
 }
 
@@ -95,11 +96,132 @@ type ContainerManager struct {
 	containers map[string]*Container
 }
 
+// ContainerConfig is the persistent subset of Container, saved to disk.
+// Excludes runtime-only fields (Pid, cmd, IP).
+type ContainerConfig struct {
+	Name      string         `json:"name"`
+	Image     string         `json:"image"`
+	Network   NetworkMode    `json:"network"`
+	Ports     []PortMapping  `json:"ports,omitempty"`
+	Resources ResourceLimits `json:"resources,omitempty"`
+	Restart   string         `json:"restart,omitempty"` // "no" (default), "always"
+}
+
 func NewContainerManager() *ContainerManager {
 	detectStorageMode()
 	initCgroupHierarchy()
-	return &ContainerManager{
+	cm := &ContainerManager{
 		containers: make(map[string]*Container),
+	}
+	cm.loadConfigs()
+	cm.autoRestart()
+	return cm
+}
+
+// autoRestart starts containers with restart=always that were restored from disk.
+func (cm *ContainerManager) autoRestart() {
+	cm.mu.Lock()
+	var toStart []string
+	for name, c := range cm.containers {
+		if c.Restart == "always" && c.Status == "stopped" {
+			toStart = append(toStart, name)
+		}
+	}
+	cm.mu.Unlock()
+
+	for _, name := range toStart {
+		log.Printf("[persist] auto-restarting container %s", name)
+		if err := cm.Start(name); err != nil {
+			log.Printf("[persist] auto-restart %s failed: %v", name, err)
+		}
+	}
+}
+
+// saveConfig writes the container's config to <containersDir>/<name>/config.json.
+// Uses atomic temp+rename to prevent corruption on crash.
+// Must be called with cm.mu held.
+func (cm *ContainerManager) saveConfig(c *Container) {
+	cfg := ContainerConfig{
+		Name:      c.Name,
+		Image:     c.Image,
+		Network:   c.Network,
+		Ports:     c.Ports,
+		Resources: c.Resources,
+		Restart:   c.Restart,
+	}
+
+	dir := filepath.Join(containersDir, c.Name)
+	os.MkdirAll(dir, 0755)
+
+	data, err := json.MarshalIndent(cfg, "", "  ")
+	if err != nil {
+		log.Printf("[persist] marshal config for %s: %v", c.Name, err)
+		return
+	}
+
+	tmpPath := filepath.Join(dir, "config.json.tmp")
+	finalPath := filepath.Join(dir, "config.json")
+
+	if err := os.WriteFile(tmpPath, data, 0644); err != nil {
+		log.Printf("[persist] write config for %s: %v", c.Name, err)
+		return
+	}
+	if err := os.Rename(tmpPath, finalPath); err != nil {
+		log.Printf("[persist] rename config for %s: %v", c.Name, err)
+		os.Remove(tmpPath)
+		return
+	}
+
+	log.Printf("[persist] saved config for %s", c.Name)
+}
+
+// loadConfigs scans containersDir for saved config.json files and
+// restores containers into the in-memory map with status "stopped".
+func (cm *ContainerManager) loadConfigs() {
+	entries, err := os.ReadDir(containersDir)
+	if err != nil {
+		log.Printf("[persist] scan containers dir: %v", err)
+		return
+	}
+
+	for _, entry := range entries {
+		if !entry.IsDir() {
+			continue
+		}
+		cfgPath := filepath.Join(containersDir, entry.Name(), "config.json")
+		data, err := os.ReadFile(cfgPath)
+		if err != nil {
+			continue // no config.json — not a persisted container
+		}
+
+		var cfg ContainerConfig
+		if err := json.Unmarshal(data, &cfg); err != nil {
+			log.Printf("[persist] corrupt config for %s: %v (skipping)", entry.Name(), err)
+			continue
+		}
+
+		// Reconstruct container from config.
+		rootfs := filepath.Join(containersDir, cfg.Name, "rootfs")
+		if _, err := os.Stat(rootfs); os.IsNotExist(err) {
+			log.Printf("[persist] rootfs missing for %s (skipping)", cfg.Name)
+			continue
+		}
+
+		cm.containers[cfg.Name] = &Container{
+			Name:      cfg.Name,
+			Rootfs:    rootfs,
+			Status:    "stopped",
+			Image:     cfg.Image,
+			Network:   cfg.Network,
+			Ports:     cfg.Ports,
+			Resources: cfg.Resources,
+			Restart:   cfg.Restart,
+		}
+		log.Printf("[persist] restored container %s (image=%s, restart=%s)", cfg.Name, cfg.Image, cfg.Restart)
+	}
+
+	if len(cm.containers) > 0 {
+		log.Printf("[persist] restored %d containers", len(cm.containers))
 	}
 }
 
@@ -124,6 +246,7 @@ type ContainerCreateParams struct {
 	Network   NetworkMode    `json:"network"`   // "host", "bridge", "none" (default: "bridge")
 	Ports     []PortMapping  `json:"ports,omitempty"`
 	Resources ResourceLimits `json:"resources,omitempty"`
+	Restart   string         `json:"restart,omitempty"` // "no" (default), "always"
 }
 
 type ContainerExecParams struct {
@@ -195,7 +318,12 @@ func (cm *ContainerManager) Create(params ContainerCreateParams) error {
 		netMode = NetBridge // default: isolated bridge networking
 	}
 
-	cm.containers[params.Name] = &Container{
+	restart := params.Restart
+	if restart == "" {
+		restart = "no"
+	}
+
+	c := &Container{
 		Name:      params.Name,
 		Rootfs:    rootfs,
 		Status:    "created",
@@ -203,7 +331,10 @@ func (cm *ContainerManager) Create(params ContainerCreateParams) error {
 		Network:   netMode,
 		Ports:     params.Ports,
 		Resources: params.Resources,
+		Restart:   restart,
 	}
+	cm.containers[params.Name] = c
+	cm.saveConfig(c)
 
 	log.Printf("[container] created %q (rootfs=%s)", params.Name, rootfs)
 	return nil
@@ -423,6 +554,7 @@ func (cm *ContainerManager) List() []Container {
 			IP:        c.IP,
 			Ports:     c.Ports,
 			Resources: c.Resources,
+			Restart:   c.Restart,
 		})
 	}
 	return list
