@@ -165,18 +165,20 @@ cd ..
 
 测试环境：Apple M 系列芯片，crosvm/HVF，Linux 6.12.15：
 
-| 指标 | Aetheria | QEMU virtiofsd | 提升 |
-|------|----------|----------------|------|
-| virtiofs 读 (DAX mmap, 缓存) | 30 GB/s | 640 MB/s | **47x** |
-| virtiofs 4K 写 | 55 MB/s | 14 MB/s | **4x** |
+| 指标 | Aetheria | QEMU virtiofsd (无 DAX) | 说明 |
+|------|----------|------------------------|------|
+| virtiofs 读 (DAX, 缓存命中) | 30 GB/s | 640 MB/s | DAX = 宿主内存带宽，非磁盘 I/O |
+| virtiofs 读 (首次访问) | 3-7 GB/s | — | 受限于 SSD，page cache 预热前 |
+| virtiofs 4K 写 | 55 MB/s | 14 MB/s | 写操作始终走 FUSE 协议 |
 | virtio-blk 顺序读 | 22.5 GB/s | — | — |
 | VM 启动到 shell | ~5.5 秒 | — | — |
 
-**关键优化：**
-- MAP_SHARED DAX — guest mmap 通过 `hv_vm_map` 直接访问宿主文件页，零拷贝
-- Per-inode DAX (FUSE_ATTR_DAX) — 逐文件粒度的 DAX 控制
-- FSEvents 自适应缓存 — macOS 文件系统变更实时失效 FUSE 缓存
-- Writeback caching + 中断合并 + 4MB FUSE 缓冲区
+**DAX 原理：** `hv_vm_map` 将宿主文件页直接映射到 guest 物理地址空间。Guest CPU 直接读宿主内存，无 FUSE 开销——本质上是内存带宽速度。这与 QEMU/virtiofsd DAX 和 kata-containers 使用的方案相同。
+
+**DAX 的代价：**
+- 读取可能过时 — 宿主文件修改不会立即对 guest 可见（通过 FSEvents 缓存失效缓解）
+- 内存压力 — 每个 DAX 映射页占用真实宿主物理内存
+- 仅加速读取 — 写操作仍走 FUSE；元数据操作（stat、readdir）也是 FUSE 速度
 
 ## 项目结构
 

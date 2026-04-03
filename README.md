@@ -165,18 +165,20 @@ cd ..
 
 Measured on Apple M-series, crosvm/HVF, Linux 6.12.15:
 
-| Metric | Aetheria | QEMU virtiofsd | Speedup |
-|--------|----------|----------------|---------|
-| virtiofs read (DAX mmap, cached) | 30 GB/s | 640 MB/s | **47x** |
-| virtiofs 4K write | 55 MB/s | 14 MB/s | **4x** |
+| Metric | Aetheria | QEMU virtiofsd (no DAX) | Note |
+|--------|----------|------------------------|------|
+| virtiofs read (DAX, cached) | 30 GB/s | 640 MB/s | DAX = host memory bandwidth, not disk I/O |
+| virtiofs read (first access) | 3-7 GB/s | — | Limited by SSD, before page cache warms |
+| virtiofs 4K write | 55 MB/s | 14 MB/s | Writes always go through FUSE protocol |
 | virtio-blk sequential read | 22.5 GB/s | — | — |
 | VM boot to shell | ~5.5s | — | — |
 
-**Key optimizations:**
-- MAP_SHARED DAX — guest mmap directly accesses host file pages via `hv_vm_map`, zero copy
-- Per-inode DAX (FUSE_ATTR_DAX) — fine-grained DAX control per file
-- FSEvents adaptive cache — macOS filesystem changes invalidate FUSE cache in real-time
-- Writeback caching + interrupt coalescing + 4MB FUSE buffer
+**How DAX works:** `hv_vm_map` maps host file pages directly into guest physical address space. Guest CPU reads host memory with no FUSE overhead — essentially memory bandwidth speed. This is the same approach used by QEMU/virtiofsd DAX and kata-containers.
+
+**Trade-offs of DAX:**
+- Stale reads — host file changes aren't instantly visible to guest (mitigated by FSEvents cache invalidation)
+- Memory pressure — every DAX-mapped page uses real host physical memory
+- Read-only benefit — writes still go through FUSE; metadata ops (stat, readdir) are FUSE speed
 
 ## Project Structure
 
