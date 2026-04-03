@@ -420,7 +420,7 @@ func (cm *ContainerManager) Start(name string) error {
 
 	// Redirect container stdout/stderr to log file.
 	logPath := filepath.Join(containersDir, name, "container.log")
-	logFile, err := os.OpenFile(logPath, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0644)
+	logFile, err := os.OpenFile(logPath, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0644)
 	if err != nil {
 		log.Printf("[container] failed to create log file: %v, using stdout", err)
 		cmd.Stdout = os.Stdout
@@ -442,6 +442,9 @@ func (cm *ContainerManager) Start(name string) error {
 	}
 
 	if err := cmd.Start(); err != nil {
+		if logFile != nil {
+			logFile.Close()
+		}
 		cm.mu.Unlock()
 		return fmt.Errorf("failed to start container: %w", err)
 	}
@@ -716,17 +719,8 @@ func containerInit() {
 	// Mount /proc, /sys, /dev inside the container rootfs.
 	mountContainerFS(rootfs)
 
-	// Enter the container rootfs. Try pivot_root first (secure, requires
-	// rootfs on a real filesystem). Fall back to chroot (works on initramfs).
-	if err := pivotRoot(rootfs); err != nil {
-		log.Printf("[container-init] pivot_root failed (%v), using chroot", err)
-		if err := syscall.Chroot(rootfs); err != nil {
-			log.Fatalf("[container-init] chroot failed: %v", err)
-		}
-		os.Chdir("/")
-	}
-
-	// Mount volumes passed via __AETHERIA_VOL_N env vars.
+	// Mount volumes BEFORE pivot_root — host paths are only accessible
+	// from the original root. Bind mount into rootfs/<containerPath>.
 	for _, env := range os.Environ() {
 		if !strings.HasPrefix(env, "__AETHERIA_VOL_") {
 			continue
@@ -737,21 +731,28 @@ func containerInit() {
 		if len(parts) < 2 {
 			continue
 		}
-		hostPath, containerPath := parts[0], parts[1]
+		hostPath := parts[0]
+		containerPath := filepath.Join(rootfs, parts[1])
 		flags := uintptr(syscall.MS_BIND | syscall.MS_REC)
-		if len(parts) == 3 && parts[2] == "ro" {
-			flags |= syscall.MS_RDONLY
-		}
 		os.MkdirAll(containerPath, 0755)
 		if err := syscall.Mount(hostPath, containerPath, "", flags, ""); err != nil {
 			log.Printf("[container-init] mount volume %s → %s: %v", hostPath, containerPath, err)
 		} else {
-			// For read-only, need a remount with MS_RDONLY (bind mount ignores it on first call).
 			if len(parts) == 3 && parts[2] == "ro" {
 				syscall.Mount("", containerPath, "", syscall.MS_BIND|syscall.MS_REMOUNT|syscall.MS_RDONLY, "")
 			}
-			log.Printf("[container-init] mounted volume %s → %s", hostPath, containerPath)
+			log.Printf("[container-init] mounted volume %s → %s", hostPath, parts[1])
 		}
+	}
+
+	// Enter the container rootfs. Try pivot_root first (secure, requires
+	// rootfs on a real filesystem). Fall back to chroot (works on initramfs).
+	if err := pivotRoot(rootfs); err != nil {
+		log.Printf("[container-init] pivot_root failed (%v), using chroot", err)
+		if err := syscall.Chroot(rootfs); err != nil {
+			log.Fatalf("[container-init] chroot failed: %v", err)
+		}
+		os.Chdir("/")
 	}
 
 	// Container init: stay alive so nsenter can execute commands.

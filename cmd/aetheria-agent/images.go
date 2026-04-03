@@ -90,14 +90,30 @@ func imageCachePath(name string) string {
 // For hardcoded distros, uses the storage backend.
 // For OCI images, returns the cached OCI rootfs path.
 func imageExtractPath(name string) string {
-	// Check OCI image cache first.
+	// Check OCI image cache (in-memory map, populated by pullOCIImage).
 	ref := ParseOCIRef(name)
 	if path, ok := ociImagePaths[ref.ShortName()]; ok {
 		return path
 	}
-	// Co-locate with containers on the selected storage backend.
-	// NOT virtiofs — macOS APFS lacks Linux symlink semantics.
-	base := filepath.Dir(containersDir) // e.g., /mnt/data, /var/aetheria, /tmp/aetheria
+
+	// Scan OCI cache on disk (handles VM restart where map is empty).
+	storageBase := filepath.Dir(containersDir)
+	ociDir := filepath.Join(storageBase, "images", "oci", ref.ShortName())
+	if entries, err := os.ReadDir(ociDir); err == nil {
+		for _, e := range entries {
+			if e.IsDir() {
+				completeMarker := filepath.Join(ociDir, e.Name(), ".oci-complete")
+				candidate := filepath.Join(ociDir, e.Name(), "rootfs")
+				if _, err := os.Stat(completeMarker); err == nil {
+					ociImagePaths[ref.ShortName()] = candidate
+					return candidate
+				}
+			}
+		}
+	}
+
+	// Hardcoded distro: co-locate with containers on storage backend.
+	base := filepath.Dir(containersDir)
 	return filepath.Join(base, "images", name, "rootfs")
 }
 

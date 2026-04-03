@@ -24,6 +24,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"syscall"
 	"time"
 )
 
@@ -406,15 +407,21 @@ func pullOCIImage(ref string) (string, error) {
 	if len(digestShort) > 12 {
 		digestShort = digestShort[:12]
 	}
-	cacheDir := filepath.Join(imagesDir, "oci", parsed.ShortName(), digestShort)
+	// Store OCI rootfs on the storage backend (ext4), not virtiofs.
+	// virtiofs/APFS lacks proper Linux symlink semantics.
+	storageBase := filepath.Dir(containersDir) // e.g., /mnt/data or /var/aetheria
+	cacheDir := filepath.Join(storageBase, "images", "oci", parsed.ShortName(), digestShort)
 	rootfs := filepath.Join(cacheDir, "rootfs")
 
-	// Skip if already extracted.
-	if _, err := os.Stat(filepath.Join(rootfs, "bin")); err == nil {
+	// Skip if already fully extracted (sentinel file marks completion).
+	completeMarker := filepath.Join(cacheDir, ".oci-complete")
+	if _, err := os.Stat(completeMarker); err == nil {
 		log.Printf("[oci] %s already cached at %s", ref, rootfs)
 		return rootfs, nil
 	}
 
+	// Clean up any incomplete previous extraction.
+	os.RemoveAll(rootfs)
 	os.MkdirAll(cacheDir, 0755)
 	os.MkdirAll(rootfs, 0755)
 
@@ -451,6 +458,9 @@ func pullOCIImage(ref string) (string, error) {
 	os.WriteFile(filepath.Join(rootfs, "etc", "resolv.conf"),
 		[]byte("nameserver 8.8.8.8\nnameserver 1.1.1.1\n"), 0644)
 
+	// Mark extraction as complete (sentinel for cache validity).
+	os.WriteFile(completeMarker, []byte(ref+"\n"), 0644)
+
 	log.Printf("[oci] pulled %s → %s", ref, rootfs)
 	return rootfs, nil
 }
@@ -476,22 +486,9 @@ func extractOCILayer(layerPath, target string) error {
 }
 
 // extractTar extracts a tar stream into target, processing OCI whiteouts.
+// Strategy: extract with tar to temp dir (handles hardlinks, xattrs, permissions),
+// then scan for .wh. whiteout markers and merge into target.
 func extractTar(r io.Reader, target string) error {
-	// Use tar command for extraction — handles all tar features (symlinks, hardlinks,
-	// permissions, xattrs) correctly. Process whiteouts after extraction.
-	//
-	// We extract to a temp dir first, then process whiteouts, then merge.
-	// Actually, for simplicity and correctness, extract directly and handle
-	// whiteouts inline by reading the tar stream.
-
-	// Use Go's archive/tar for whiteout-aware extraction.
-	// Import is at the top — but we need to add it. For now, use tar command
-	// and post-process whiteouts.
-
-	// Strategy: extract with tar, then scan for .wh. files and process them.
-	// This is simpler and handles edge cases (hardlinks, xattrs) that Go's
-	// archive/tar may miss.
-
 	tmpDir := target + ".layer-tmp"
 	os.RemoveAll(tmpDir)
 	os.MkdirAll(tmpDir, 0755)
@@ -567,14 +564,13 @@ func mergeLayerWithWhiteouts(layerDir, target string) error {
 			return os.Symlink(linkTarget, destPath)
 		}
 
-		// Regular file: copy.
-		return copyFile(path, destPath, info.Mode())
+		// Regular file: copy with ownership.
+		return copyFile(path, destPath, info)
 	})
 }
 
-// copyFile copies a file preserving permissions.
-func copyFile(src, dst string, mode os.FileMode) error {
-	// Ensure parent directory exists.
+// copyFile copies a file preserving permissions and ownership.
+func copyFile(src, dst string, srcInfo os.FileInfo) error {
 	os.MkdirAll(filepath.Dir(dst), 0755)
 
 	in, err := os.Open(src)
@@ -583,7 +579,7 @@ func copyFile(src, dst string, mode os.FileMode) error {
 	}
 	defer in.Close()
 
-	out, err := os.OpenFile(dst, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, mode)
+	out, err := os.OpenFile(dst, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, srcInfo.Mode())
 	if err != nil {
 		return err
 	}
@@ -593,6 +589,14 @@ func copyFile(src, dst string, mode os.FileMode) error {
 	if err != nil {
 		return err
 	}
-	return closeErr
+	if closeErr != nil {
+		return closeErr
+	}
+
+	// Preserve uid/gid (important for OCI images with non-root files).
+	if stat, ok := srcInfo.Sys().(*syscall.Stat_t); ok {
+		os.Chown(dst, int(stat.Uid), int(stat.Gid))
+	}
+	return nil
 }
 
