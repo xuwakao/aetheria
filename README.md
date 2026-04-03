@@ -165,20 +165,20 @@ cd ..
 
 Measured on Apple M-series, crosvm/HVF, Linux 6.12.15:
 
-| Metric | Aetheria | QEMU virtiofsd (no DAX) | Note |
-|--------|----------|------------------------|------|
-| virtiofs read (DAX, cached) | 30 GB/s | 640 MB/s | DAX = host memory bandwidth, not disk I/O |
-| virtiofs read (first access) | 3-7 GB/s | — | Limited by SSD, before page cache warms |
-| virtiofs 4K write | 55 MB/s | 14 MB/s | Writes always go through FUSE protocol |
-| virtio-blk sequential read | 22.5 GB/s | — | — |
-| VM boot to shell | ~5.5s | — | — |
+| Metric | Value | Note |
+|--------|-------|------|
+| virtiofs read (DAX, cached) | 30 GB/s | Memory bandwidth — host pages mapped into guest via `hv_vm_map` |
+| virtiofs read (first access) | 3-7 GB/s | SSD speed, before host page cache warms up |
+| virtiofs 4K write | 55 MB/s | Writes go through FUSE protocol, not DAX |
+| virtio-blk sequential read | 22.5 GB/s | Cached |
+| VM boot to shell | ~5.5s | — |
 
-**How DAX works:** `hv_vm_map` maps host file pages directly into guest physical address space. Guest CPU reads host memory with no FUSE overhead — essentially memory bandwidth speed. This is the same approach used by QEMU/virtiofsd DAX and kata-containers.
+**How DAX works:** `hv_vm_map` maps host file pages directly into guest physical address space. Guest reads hit host memory with zero FUSE overhead. Same approach as QEMU/virtiofsd DAX and kata-containers.
 
-**Trade-offs of DAX:**
-- Stale reads — host file changes aren't instantly visible to guest (mitigated by FSEvents cache invalidation)
-- Memory pressure — every DAX-mapped page uses real host physical memory
-- Read-only benefit — writes still go through FUSE; metadata ops (stat, readdir) are FUSE speed
+**Trade-offs:**
+- Stale reads — host file modifications aren't instantly visible (mitigated by FSEvents cache invalidation)
+- Memory pressure — DAX-mapped pages consume real host physical memory
+- Read-only benefit — writes and metadata ops (stat, readdir) still use FUSE
 
 ## Project Structure
 
