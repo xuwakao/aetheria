@@ -35,14 +35,26 @@ class ShmReader {
         return ptr.load(fromByteOffset: 24, as: UInt32.self)
     }
 
-    /// Pointer to the framebuffer data (after the 4096-byte header).
-    var framebufferPointer: UnsafeMutableRawPointer? {
+    /// Active (front) buffer index: 0 or 1. Swift reads from this buffer.
+    var activeBuffer: UInt32 {
+        guard let ptr = pointer else { return 0 }
+        return ptr.load(fromByteOffset: 28, as: UInt32.self)
+    }
+
+    var singleBufferSize: Int {
+        return Int(width) * Int(height) * 4
+    }
+
+    /// Pointer to the FRONT buffer (the one Swift should read from).
+    /// Double-buffered: buffer 0 at offset 4096, buffer 1 at offset 4096 + fb_size.
+    var framebufferPointer: UnsafeRawPointer? {
         guard let ptr = pointer else { return nil }
-        return ptr.advanced(by: ShmReader.headerSize)
+        let bufferOffset = ShmReader.headerSize + Int(activeBuffer) * singleBufferSize
+        return UnsafeRawPointer(ptr.advanced(by: bufferOffset))
     }
 
     var framebufferSize: Int {
-        return Int(width) * Int(height) * 4
+        return singleBufferSize
     }
 
     init() {
@@ -52,7 +64,7 @@ class ShmReader {
 
         // Get file size.
         var stat = stat()
-        guard fstat(fd, &stat) == 0, stat.st_size > ShmReader.headerSize else { return }
+        guard fstat(fd, &stat) == 0, stat.st_size > Int64(ShmReader.headerSize) else { return }
 
         let size = Int(stat.st_size)
         let ptr = mmap(nil, size, PROT_READ, MAP_SHARED, fd, 0)
