@@ -2,9 +2,10 @@ import Foundation
 
 /// Reads the shared memory framebuffer written by crosvm's SharedMemory display backend.
 ///
-/// Layout:
-///   Offset 0:    ShmHeader (32 bytes, padded to 4096)
-///   Offset 4096: XRGB8888 framebuffer data
+/// Layout (double-buffered):
+///   Offset 0:                ShmHeader (padded to 4096)
+///   Offset 4096:             Buffer 0 (width * height * 4, XRGB8888)
+///   Offset 4096 + fb_size:   Buffer 1 (width * height * 4, XRGB8888)
 class ShmReader {
     static let shmPath = "/tmp/aetheria-display.shm"
     static let headerSize = 4096
@@ -38,7 +39,7 @@ class ShmReader {
     /// Active (front) buffer index: 0 or 1. Swift reads from this buffer.
     var activeBuffer: UInt32 {
         guard let ptr = pointer else { return 0 }
-        return ptr.load(fromByteOffset: 28, as: UInt32.self)
+        return ptr.load(fromByteOffset: 28, as: UInt32.self) & 1
     }
 
     var singleBufferSize: Int {
