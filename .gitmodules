@@ -4,3 +4,6 @@
 [submodule "aetheria-kernel"]
 	path = aetheria-kernel
 	url = https://github.com/xuwakao/aetheria-kernel.git
+[submodule "aetheria-virglrenderer"]
+	path = aetheria-virglrenderer
+	url = https://gitlab.freedesktop.org/virgl/virglrenderer.git
