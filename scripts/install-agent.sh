@@ -24,10 +24,10 @@ echo "Agent: $(ls -lh "$AGENT_BIN" | awk '{print $5}')"
 
 # Install into rootfs via Docker (ext4 mount requires Linux).
 echo "Installing into rootfs..."
-docker run --rm --privileged \
+docker run --rm --privileged --platform linux/arm64 \
     -v "$(dirname "$ROOTFS_IMG"):/work" \
     -v "$AGENT_BIN:/agent:ro" \
-    alpine:3.21 sh -c "
+    arm64v8/alpine:3.21 sh -c "
 set -e
 mount -o loop /work/$(basename "$ROOTFS_IMG") /mnt
 
@@ -63,9 +63,11 @@ ln -sf /etc/init.d/aetheria-agent /mnt/etc/runlevels/default/aetheria-agent 2>/d
 # Create directories agent needs
 mkdir -p /mnt/var/aetheria/containers /mnt/var/aetheria/images /mnt/var/log
 
-# Install tools needed for container operations
-# util-linux provides nsenter; iproute2 for ip command; iptables for NAT
-chroot /mnt /bin/sh -c 'apk add --no-cache util-linux tar iproute2 iptables' 2>&1 || true
+# Install tools needed for container operations and 3D graphics
+# util-linux: nsenter; iproute2: ip; nftables: NAT; mesa: GPU drivers
+chroot /mnt /bin/sh -c 'apk add --no-cache \
+    util-linux tar iproute2 iptables nftables \
+    mesa-dri-gallium mesa-gl mesa-egl mesa-gles mesa-gbm mesa-utils' 2>&1 || true
 
 sync
 umount /mnt

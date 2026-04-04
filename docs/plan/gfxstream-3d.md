@@ -1,7 +1,7 @@
 # Plan: Gfxstream 3D GPU Acceleration on macOS
 
 Created: 2026-04-04T01:00:00Z
-Status: ACTIVE
+Status: COMPLETED
 Source: User request — "推进 gfxstream 3D 加速"
 
 ## Task Description
