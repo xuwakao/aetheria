@@ -58,6 +58,14 @@ class ShmReader {
         return singleBufferSize
     }
 
+    /// Pointer to a specific buffer slot (0 or 1).
+    func bufferPointer(index: Int) -> UnsafeRawPointer? {
+        guard let ptr = pointer, index == 0 || index == 1 else { return nil }
+        let offset = ShmReader.headerSize + index * singleBufferSize
+        guard offset + singleBufferSize <= mappedSize else { return nil }
+        return UnsafeRawPointer(ptr.advanced(by: offset))
+    }
+
     init() {
         let fd = open(ShmReader.shmPath, O_RDONLY)
         guard fd >= 0 else { return }

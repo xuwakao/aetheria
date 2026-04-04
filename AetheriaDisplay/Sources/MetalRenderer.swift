@@ -2,16 +2,24 @@ import Metal
 import MetalKit
 
 /// Renders the shared memory framebuffer to a Metal view.
-/// On each draw call, uploads XRGB8888 data from shared memory to a texture,
-/// then draws a fullscreen textured quad.
+///
+/// On Apple Silicon (unified memory), uses MTLBuffer backed by the shared memory
+/// mmap. The GPU reads directly from the shared pages — true zero-copy when the
+/// framebuffer is page-aligned. Falls back to texture upload for non-aligned buffers.
 class MetalRenderer: NSObject, MTKViewDelegate {
     private let device: MTLDevice
     private let commandQueue: MTLCommandQueue
     private let pipelineState: MTLRenderPipelineState
     private let shmReader: ShmReader
-    private var texture: MTLTexture?
-    private var sharedBuffer: MTLBuffer?
+
+    // Double-buffered textures matching the shared memory layout.
+    // Pre-created at initialization to avoid per-frame allocation.
+    private var textures: [MTLTexture?] = [nil, nil]
+    private var buffers: [MTLBuffer?] = [nil, nil]
+    private var useZeroCopy = false
     private var lastFrameSeq: UInt32 = 0
+    private var currentWidth: UInt32 = 0
+    private var currentHeight: UInt32 = 0
 
     init?(device: MTLDevice, shmReader: ShmReader) {
         self.device = device
@@ -20,7 +28,6 @@ class MetalRenderer: NSObject, MTKViewDelegate {
         guard let queue = device.makeCommandQueue() else { return nil }
         self.commandQueue = queue
 
-        // Create render pipeline with inline shaders.
         let library: MTLLibrary
         do {
             let shaderSource = """
@@ -33,7 +40,6 @@ class MetalRenderer: NSObject, MTKViewDelegate {
             };
 
             vertex VertexOut vertexShader(uint vertexID [[vertex_id]]) {
-                // Fullscreen triangle strip: 4 vertices → 2 triangles.
                 float2 positions[4] = {
                     float2(-1, -1), float2(1, -1),
                     float2(-1,  1), float2(1,  1)
@@ -52,7 +58,6 @@ class MetalRenderer: NSObject, MTKViewDelegate {
                                            texture2d<float> tex [[texture(0)]]) {
                 constexpr sampler s(mag_filter::nearest, min_filter::nearest);
                 float4 color = tex.sample(s, in.texCoord);
-                // XRGB8888 maps to BGRA8Unorm — alpha channel is unused, set to 1.
                 return float4(color.rgb, 1.0);
             }
             """
@@ -78,7 +83,9 @@ class MetalRenderer: NSObject, MTKViewDelegate {
     }
 
     func mtkView(_ view: MTKView, drawableSizeWillChange size: CGSize) {
-        // Window resized — texture will be recreated on next draw if dimensions changed.
+        // Force texture recreation on next draw.
+        currentWidth = 0
+        currentHeight = 0
     }
 
     func draw(in view: MTKView) {
@@ -86,87 +93,100 @@ class MetalRenderer: NSObject, MTKViewDelegate {
         let h = shmReader.height
         guard w > 0, h > 0 else { return }
 
-        // Check if frame has been updated.
         let seq = shmReader.frameSeq
-        if seq == lastFrameSeq, texture != nil {
-            // No new frame — re-render previous texture (for window expose events).
-            renderTexture(in: view)
+        let activeIdx = Int(shmReader.activeBuffer)
+
+        // Re-render previous frame for window expose events.
+        if seq == lastFrameSeq, textures[activeIdx] != nil {
+            renderTexture(textures[activeIdx]!, in: view)
             return
         }
         lastFrameSeq = seq
 
-        guard let fbPtr = shmReader.framebufferPointer else { return }
-        let stride = Int(shmReader.stride)
-
-        // Create or recreate texture if dimensions changed.
-        // Use MTLBuffer with shared storage mode backed by the mmap'd shared memory.
-        // On Apple Silicon (unified memory), this is zero-copy — the GPU reads
-        // directly from the shared memory pages. No CPU→GPU transfer.
-        if texture == nil || texture!.width != Int(w) || texture!.height != Int(h) {
-            let bufferSize = Int(h) * stride
-            // Create MTLBuffer from existing pointer (no copy).
-            guard let buffer = device.makeBuffer(
-                bytesNoCopy: UnsafeMutableRawPointer(mutating: fbPtr),
-                length: bufferSize,
-                options: .storageModeShared,
-                deallocator: nil  // We manage memory via mmap
-            ) else {
-                // Fallback: regular texture upload.
-                let desc = MTLTextureDescriptor.texture2DDescriptor(
-                    pixelFormat: .bgra8Unorm, width: Int(w), height: Int(h), mipmapped: false)
-                desc.usage = [.shaderRead]
-                texture = device.makeTexture(descriptor: desc)
-                texture?.replace(
-                    region: MTLRegion(origin: MTLOrigin(x: 0, y: 0, z: 0),
-                                      size: MTLSize(width: Int(w), height: Int(h), depth: 1)),
-                    mipmapLevel: 0, withBytes: fbPtr, bytesPerRow: stride)
-                renderTexture(in: view)
-                return
-            }
-
-            // Create texture view from the shared buffer — true zero-copy.
-            let texDesc = MTLTextureDescriptor.texture2DDescriptor(
-                pixelFormat: .bgra8Unorm, width: Int(w), height: Int(h), mipmapped: false)
-            texDesc.usage = [.shaderRead]
-            texDesc.storageMode = .shared
-            texture = buffer.makeTexture(
-                descriptor: texDesc,
-                offset: 0,
-                bytesPerRow: stride)
-            sharedBuffer = buffer
+        // Recreate textures when dimensions change.
+        if w != currentWidth || h != currentHeight {
+            setupTextures(width: w, height: h)
+            currentWidth = w
+            currentHeight = h
         }
 
-        // On buffer/texture recreation, rebind the pointer (front buffer may have swapped).
-        if let buf = sharedBuffer {
-            let currentFbPtr = shmReader.framebufferPointer!
-            let bufferSize = Int(h) * stride
-            // Check if the buffer still points to the same memory.
-            if buf.contents() != UnsafeMutableRawPointer(mutating: currentFbPtr) {
-                // Front buffer swapped — recreate buffer+texture from new pointer.
-                guard let newBuffer = device.makeBuffer(
-                    bytesNoCopy: UnsafeMutableRawPointer(mutating: currentFbPtr),
-                    length: bufferSize,
-                    options: .storageModeShared,
-                    deallocator: nil
-                ) else { return }
-
-                let texDesc = MTLTextureDescriptor.texture2DDescriptor(
-                    pixelFormat: .bgra8Unorm, width: Int(w), height: Int(h), mipmapped: false)
-                texDesc.usage = [.shaderRead]
-                texDesc.storageMode = .shared
-                texture = newBuffer.makeTexture(
-                    descriptor: texDesc, offset: 0, bytesPerRow: stride)
-                sharedBuffer = newBuffer
+        if useZeroCopy {
+            // Zero-copy path: texture is backed by shared memory. Just render.
+            if let tex = textures[activeIdx] {
+                renderTexture(tex, in: view)
             }
+        } else {
+            // Fallback: upload pixels to texture.
+            guard let fbPtr = shmReader.framebufferPointer,
+                  let tex = textures[0] else { return }
+            let stride = Int(shmReader.stride)
+            tex.replace(
+                region: MTLRegion(origin: MTLOrigin(x: 0, y: 0, z: 0),
+                                  size: MTLSize(width: Int(w), height: Int(h), depth: 1)),
+                mipmapLevel: 0, withBytes: fbPtr, bytesPerRow: stride)
+            renderTexture(tex, in: view)
         }
-
-        renderTexture(in: view)
     }
 
-    private func renderTexture(in view: MTKView) {
+    /// Create textures for both double-buffer slots.
+    /// Tries zero-copy (MTLBuffer from shared memory pointer) first.
+    /// Falls back to regular texture if pointer is not page-aligned.
+    private func setupTextures(width: UInt32, height: UInt32) {
+        let stride = Int(width) * 4
+        let bufferSize = Int(height) * stride
+        let pageSize = Int(getpagesize())
+
+        textures = [nil, nil]
+        buffers = [nil, nil]
+        useZeroCopy = false
+
+        // Try zero-copy for both buffer slots.
+        var zeroCopyOk = true
+        for idx in 0..<2 {
+            guard let ptr = shmReader.bufferPointer(index: idx) else {
+                zeroCopyOk = false
+                break
+            }
+            let ptrAddr = Int(bitPattern: ptr)
+            // makeBuffer(bytesNoCopy:) requires page-aligned pointer and page-aligned length.
+            let alignedSize = (bufferSize + pageSize - 1) & ~(pageSize - 1)
+            if ptrAddr % pageSize != 0 {
+                zeroCopyOk = false
+                break
+            }
+            guard let buffer = device.makeBuffer(
+                bytesNoCopy: UnsafeMutableRawPointer(mutating: ptr),
+                length: alignedSize,
+                options: .storageModeShared,
+                deallocator: nil
+            ) else {
+                zeroCopyOk = false
+                break
+            }
+            let texDesc = MTLTextureDescriptor.texture2DDescriptor(
+                pixelFormat: .bgra8Unorm, width: Int(width), height: Int(height), mipmapped: false)
+            texDesc.usage = [.shaderRead]
+            texDesc.storageMode = .shared
+            textures[idx] = buffer.makeTexture(descriptor: texDesc, offset: 0, bytesPerRow: stride)
+            buffers[idx] = buffer
+        }
+
+        if zeroCopyOk && textures[0] != nil && textures[1] != nil {
+            useZeroCopy = true
+            print("[display] Zero-copy Metal rendering enabled (\(width)x\(height))")
+        } else {
+            // Fallback: single regular texture, upload each frame.
+            let desc = MTLTextureDescriptor.texture2DDescriptor(
+                pixelFormat: .bgra8Unorm, width: Int(width), height: Int(height), mipmapped: false)
+            desc.usage = [.shaderRead]
+            textures[0] = device.makeTexture(descriptor: desc)
+            print("[display] Texture upload rendering (\(width)x\(height), not page-aligned)")
+        }
+    }
+
+    private func renderTexture(_ tex: MTLTexture, in view: MTKView) {
         guard let drawable = view.currentDrawable,
-              let descriptor = view.currentRenderPassDescriptor,
-              let tex = texture else { return }
+              let descriptor = view.currentRenderPassDescriptor else { return }
 
         guard let commandBuffer = commandQueue.makeCommandBuffer(),
               let encoder = commandBuffer.makeRenderCommandEncoder(descriptor: descriptor) else { return }
