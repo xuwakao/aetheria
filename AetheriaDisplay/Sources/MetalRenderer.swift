@@ -148,15 +148,15 @@ class MetalRenderer: NSObject, MTKViewDelegate {
                 break
             }
             let ptrAddr = Int(bitPattern: ptr)
-            // makeBuffer(bytesNoCopy:) requires page-aligned pointer and page-aligned length.
-            let alignedSize = (bufferSize + pageSize - 1) & ~(pageSize - 1)
+            // makeBuffer(bytesNoCopy:) requires page-aligned pointer.
+            // Length must not exceed actual buffer slot size.
             if ptrAddr % pageSize != 0 {
                 zeroCopyOk = false
                 break
             }
             guard let buffer = device.makeBuffer(
                 bytesNoCopy: UnsafeMutableRawPointer(mutating: ptr),
-                length: alignedSize,
+                length: bufferSize,
                 options: .storageModeShared,
                 deallocator: nil
             ) else {
