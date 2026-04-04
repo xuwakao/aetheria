@@ -91,12 +91,8 @@ class ControlSocket {
                 offset += 1
             case 0x52: // 'R' — resize
                 if offset + 9 <= n {
-                    let w = buf.withUnsafeBufferPointer { ptr -> UInt32 in
-                        ptr.baseAddress!.advanced(by: offset + 1).withMemoryRebound(to: UInt32.self, capacity: 1) { $0.pointee }
-                    }
-                    let h = buf.withUnsafeBufferPointer { ptr -> UInt32 in
-                        ptr.baseAddress!.advanced(by: offset + 5).withMemoryRebound(to: UInt32.self, capacity: 1) { $0.pointee }
-                    }
+                    let w = decodeU32(buf, at: offset + 1)
+                    let h = decodeU32(buf, at: offset + 5)
                     onResize?(w, h)
                     offset += 9
                 } else {
@@ -108,46 +104,44 @@ class ControlSocket {
         }
     }
 
+    // Encode UInt32 as little-endian bytes (avoids unaligned memory access).
+    private func encodeU32(_ value: UInt32) -> [UInt8] {
+        return [UInt8(value & 0xFF), UInt8((value >> 8) & 0xFF),
+                UInt8((value >> 16) & 0xFF), UInt8((value >> 24) & 0xFF)]
+    }
+
+    private func decodeU32(_ bytes: [UInt8], at offset: Int) -> UInt32 {
+        return UInt32(bytes[offset]) | UInt32(bytes[offset+1]) << 8 |
+               UInt32(bytes[offset+2]) << 16 | UInt32(bytes[offset+3]) << 24
+    }
+
     /// Send key event to crosvm.
     func sendKeyEvent(scancode: UInt32, pressed: Bool) {
         guard fd >= 0 else { return }
-        var msg = [UInt8](repeating: 0, count: 6)
-        msg[0] = 0x4B // 'K'
-        withUnsafeMutablePointer(to: &msg[1]) { ptr in
-            ptr.withMemoryRebound(to: UInt32.self, capacity: 1) { $0.pointee = scancode }
-        }
-        msg[5] = pressed ? 1 : 0
+        var msg: [UInt8] = [0x4B] // 'K'
+        msg.append(contentsOf: encodeU32(scancode))
+        msg.append(pressed ? 1 : 0)
         write(fd, msg, msg.count)
     }
 
     /// Send mouse move to crosvm.
     func sendMouseMove(x: UInt32, y: UInt32, buttons: UInt8) {
         guard fd >= 0 else { return }
-        var msg = [UInt8](repeating: 0, count: 10)
-        msg[0] = 0x4D // 'M'
-        withUnsafeMutablePointer(to: &msg[1]) { ptr in
-            ptr.withMemoryRebound(to: UInt32.self, capacity: 1) { $0.pointee = x }
-        }
-        withUnsafeMutablePointer(to: &msg[5]) { ptr in
-            ptr.withMemoryRebound(to: UInt32.self, capacity: 1) { $0.pointee = y }
-        }
-        msg[9] = buttons
+        var msg: [UInt8] = [0x4D] // 'M'
+        msg.append(contentsOf: encodeU32(x))
+        msg.append(contentsOf: encodeU32(y))
+        msg.append(buttons)
         write(fd, msg, msg.count)
     }
 
     /// Send mouse click to crosvm.
     func sendMouseClick(x: UInt32, y: UInt32, button: UInt8, pressed: Bool) {
         guard fd >= 0 else { return }
-        var msg = [UInt8](repeating: 0, count: 11)
-        msg[0] = 0x43 // 'C'
-        withUnsafeMutablePointer(to: &msg[1]) { ptr in
-            ptr.withMemoryRebound(to: UInt32.self, capacity: 1) { $0.pointee = x }
-        }
-        withUnsafeMutablePointer(to: &msg[5]) { ptr in
-            ptr.withMemoryRebound(to: UInt32.self, capacity: 1) { $0.pointee = y }
-        }
-        msg[9] = button
-        msg[10] = pressed ? 1 : 0
+        var msg: [UInt8] = [0x43] // 'C'
+        msg.append(contentsOf: encodeU32(x))
+        msg.append(contentsOf: encodeU32(y))
+        msg.append(button)
+        msg.append(pressed ? 1 : 0)
         write(fd, msg, msg.count)
     }
 
