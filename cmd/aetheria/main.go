@@ -448,7 +448,7 @@ func cmdRun() {
 	}
 	args = append(args,
 		"--serial", "type=stdout,hardware=serial,num=1",
-		"-p", "root=/dev/vda rw console=ttyS0 earlycon=uart8250,mmio,0x3f8 loglevel=4",
+		"-p", "root=/dev/vda rw console=tty0 console=ttyS0 earlycon=uart8250,mmio,0x3f8 loglevel=4",
 	)
 	if initrd != "" {
 		args = append(args, "--initrd", initrd)
