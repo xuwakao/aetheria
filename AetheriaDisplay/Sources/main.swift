@@ -9,6 +9,16 @@
 
 import AppKit
 
+// --test-pattern: Generate animated test frames (no VM needed).
+// --test-pattern runs the frame generator in background, display app renders them.
+if CommandLine.arguments.contains("--test-pattern") {
+    print("AetheriaDisplay test mode: generating 1024x768 test pattern at 60fps")
+    let gen = TestPatternGenerator()
+    DispatchQueue.global().async { gen.run() }
+    // Small delay to let the generator create shared memory before app connects.
+    Thread.sleep(forTimeInterval: 0.5)
+}
+
 let app = NSApplication.shared
 let delegate = AppDelegate()
 app.delegate = delegate
