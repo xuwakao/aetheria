@@ -10,6 +10,7 @@ class MetalRenderer: NSObject, MTKViewDelegate {
     private let pipelineState: MTLRenderPipelineState
     private let shmReader: ShmReader
     private var texture: MTLTexture?
+    private var sharedBuffer: MTLBuffer?
     private var lastFrameSeq: UInt32 = 0
 
     init?(device: MTLDevice, shmReader: ShmReader) {
@@ -94,28 +95,70 @@ class MetalRenderer: NSObject, MTKViewDelegate {
         }
         lastFrameSeq = seq
 
+        guard let fbPtr = shmReader.framebufferPointer else { return }
+        let stride = Int(shmReader.stride)
+
         // Create or recreate texture if dimensions changed.
+        // Use MTLBuffer with shared storage mode backed by the mmap'd shared memory.
+        // On Apple Silicon (unified memory), this is zero-copy — the GPU reads
+        // directly from the shared memory pages. No CPU→GPU transfer.
         if texture == nil || texture!.width != Int(w) || texture!.height != Int(h) {
-            let desc = MTLTextureDescriptor.texture2DDescriptor(
-                pixelFormat: .bgra8Unorm,
-                width: Int(w),
-                height: Int(h),
-                mipmapped: false
-            )
-            desc.usage = [.shaderRead]
-            texture = device.makeTexture(descriptor: desc)
+            let bufferSize = Int(h) * stride
+            // Create MTLBuffer from existing pointer (no copy).
+            guard let buffer = device.makeBuffer(
+                bytesNoCopy: UnsafeMutableRawPointer(mutating: fbPtr),
+                length: bufferSize,
+                options: .storageModeShared,
+                deallocator: nil  // We manage memory via mmap
+            ) else {
+                // Fallback: regular texture upload.
+                let desc = MTLTextureDescriptor.texture2DDescriptor(
+                    pixelFormat: .bgra8Unorm, width: Int(w), height: Int(h), mipmapped: false)
+                desc.usage = [.shaderRead]
+                texture = device.makeTexture(descriptor: desc)
+                texture?.replace(
+                    region: MTLRegion(origin: MTLOrigin(x: 0, y: 0, z: 0),
+                                      size: MTLSize(width: Int(w), height: Int(h), depth: 1)),
+                    mipmapLevel: 0, withBytes: fbPtr, bytesPerRow: stride)
+                renderTexture(in: view)
+                return
+            }
+
+            // Create texture view from the shared buffer — true zero-copy.
+            let texDesc = MTLTextureDescriptor.texture2DDescriptor(
+                pixelFormat: .bgra8Unorm, width: Int(w), height: Int(h), mipmapped: false)
+            texDesc.usage = [.shaderRead]
+            texDesc.storageMode = .shared
+            texture = buffer.makeTexture(
+                descriptor: texDesc,
+                offset: 0,
+                bytesPerRow: stride)
+            sharedBuffer = buffer
         }
 
-        guard let tex = texture, let fbPtr = shmReader.framebufferPointer else { return }
+        // On buffer/texture recreation, rebind the pointer (front buffer may have swapped).
+        if let buf = sharedBuffer {
+            let currentFbPtr = shmReader.framebufferPointer!
+            let bufferSize = Int(h) * stride
+            // Check if the buffer still points to the same memory.
+            if buf.contents() != UnsafeMutableRawPointer(mutating: currentFbPtr) {
+                // Front buffer swapped — recreate buffer+texture from new pointer.
+                guard let newBuffer = device.makeBuffer(
+                    bytesNoCopy: UnsafeMutableRawPointer(mutating: currentFbPtr),
+                    length: bufferSize,
+                    options: .storageModeShared,
+                    deallocator: nil
+                ) else { return }
 
-        // Upload framebuffer data to texture.
-        tex.replace(
-            region: MTLRegion(origin: MTLOrigin(x: 0, y: 0, z: 0),
-                              size: MTLSize(width: Int(w), height: Int(h), depth: 1)),
-            mipmapLevel: 0,
-            withBytes: fbPtr,
-            bytesPerRow: Int(shmReader.stride)
-        )
+                let texDesc = MTLTextureDescriptor.texture2DDescriptor(
+                    pixelFormat: .bgra8Unorm, width: Int(w), height: Int(h), mipmapped: false)
+                texDesc.usage = [.shaderRead]
+                texDesc.storageMode = .shared
+                texture = newBuffer.makeTexture(
+                    descriptor: texDesc, offset: 0, bytesPerRow: stride)
+                sharedBuffer = newBuffer
+            }
+        }
 
         renderTexture(in: view)
     }
