@@ -44,6 +44,11 @@ class ControlSocket {
             return false
         }
 
+        // Non-blocking so input writes never block the main thread.
+        // crosvm may not read input messages, so the send buffer can fill up.
+        var flags = fcntl(fd, F_GETFL)
+        fcntl(fd, F_SETFL, flags | O_NONBLOCK)
+
         return true
     }
 
