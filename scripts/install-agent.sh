@@ -69,6 +69,12 @@ chroot /mnt /bin/sh -c 'apk add --no-cache \
     util-linux tar iproute2 iptables nftables \
     mesa-dri-gallium mesa-gl mesa-egl mesa-gles mesa-gbm mesa-utils' 2>&1 || true
 
+# Enable getty on tty0 (framebuffer console) so fbcon stays active.
+# Without this, fb0 shows nothing because no process writes to tty0.
+if ! grep -q 'tty0' /mnt/etc/inittab 2>/dev/null; then
+    echo 'tty0::respawn:/sbin/getty 38400 tty0' >> /mnt/etc/inittab
+fi
+
 sync
 umount /mnt
 echo 'Agent installed successfully.'
