@@ -56,7 +56,11 @@ class AppDelegate: NSObject, NSApplicationDelegate {
 
         metalView = MTKView(frame: contentRect, device: device)
         metalView.colorPixelFormat = .bgra8Unorm
-        metalView.preferredFramesPerSecond = 60
+        // Paused mode: only draw when explicitly triggered by frame notification.
+        // This prevents the draw loop from starving the main thread event loop
+        // (which causes "not responding" window).
+        metalView.isPaused = true
+        metalView.enableSetNeedsDisplay = true
 
         // Set up renderer.
         renderer = MetalRenderer(device: device, shmReader: shmReader!)
@@ -69,7 +73,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         controlSocket = ControlSocket()
         controlSocket?.onFrameReady = { [weak self] in
             DispatchQueue.main.async {
-                self?.metalView.setNeedsDisplay(self?.metalView.bounds ?? .zero)
+                self?.metalView.needsDisplay = true
             }
         }
         controlSocket?.startListening()
