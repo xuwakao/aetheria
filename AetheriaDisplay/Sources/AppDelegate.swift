@@ -7,6 +7,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     var renderer: MetalRenderer?
     var shmReader: ShmReader?
     var controlSocket: ControlSocket?
+    var drawPending = false
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         // Connect to shared memory.
@@ -72,8 +73,11 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         // Connect control socket for frame notifications.
         controlSocket = ControlSocket()
         controlSocket?.onFrameReady = { [weak self] in
+            guard let self = self, !self.drawPending else { return }
+            self.drawPending = true
             DispatchQueue.main.async {
-                self?.metalView.needsDisplay = true
+                self.drawPending = false
+                self.metalView.needsDisplay = true
             }
         }
         controlSocket?.startListening()

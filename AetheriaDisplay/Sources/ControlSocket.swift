@@ -58,7 +58,7 @@ class ControlSocket {
             }
         }
 
-        let source = DispatchSource.makeReadSource(fileDescriptor: fd, queue: .main)
+        let source = DispatchSource.makeReadSource(fileDescriptor: fd, queue: DispatchQueue(label: "display.socket"))
         source.setEventHandler { [weak self] in
             self?.handleRead()
         }
