@@ -104,6 +104,8 @@ case "${1:-run}" in
         echo "    ./run.sh shell alpine"
         echo ""
         # crosvm needs sudo for vmnet (network)
+        # gfxstream needs libvulkan.dylib from MoltenVK (Homebrew)
+        export DYLD_LIBRARY_PATH="/opt/homebrew/lib:${DYLD_LIBRARY_PATH:-}"
         sudo -v 2>/dev/null || echo "Enter password for VM networking (vmnet):"
         export AETHERIA_DATA_DISK="$AETHERIA_DATA"
         exec "$CLI" run
